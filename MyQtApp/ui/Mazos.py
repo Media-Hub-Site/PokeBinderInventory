@@ -3,22 +3,27 @@ import os
 import re
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
-    QListWidget, QListWidgetItem, QScrollArea, QFrame, QSpinBox,
-    QMessageBox, QDialog, QStackedWidget, QGridLayout, QComboBox,
-    QColorDialog, QApplication
+    QScrollArea, QFrame, QMessageBox, QDialog, QStackedWidget, QGridLayout,
+    QComboBox, QColorDialog, QApplication, QSizePolicy
 )
-from PyQt6.QtGui import QPixmap, QColor
-from PyQt6.QtCore import Qt, QPoint, QRectF, pyqtSignal
+from PyQt6.QtGui import QPixmap, QColor, QDrag
+from PyQt6.QtCore import Qt, QPoint, QRect, QRectF, QMimeData, QTimer, pyqtSignal
+from sqlalchemy import and_, func
 
 from MyQtApp.config import USER_DATA_DIR, load_settings
 from MyQtApp.session import SessionLocal
-from MyQtApp.models import Mazo, MazoCarta, Cartas
-from MyQtApp.app.getImgs import get_webp_pixmap, get_pixmap_from_zip
-from MyQtApp.i18n import t
+from MyQtApp.models import Mazo, MazoCarta, Cartas, UsuarioCarta
+from MyQtApp.app.getImgs import (
+    get_webp_pixmap, get_pixmap_from_zip, get_card_placeholder_pixmap,
+    CardImageLoaderManager
+)
+from MyQtApp.app.db_services import obtener_categorias_usuario
+from MyQtApp.i18n import t, language_manager
 from MyQtApp.ui.toast import show_toast
-from MyQtApp.ui.PrintView import ImportDecklistDialog
+from MyQtApp.ui.CardWidget import CardZoomOverlay
 from MyQtApp.ui.BinderCoverWidget import BINDER_DESIGNS, resolve_design_key
 from MyQtApp.ui.DeckBoxWidget import DeckBoxWidget, DeckBoxOpenAnimationOverlay
+from MyQtApp.ui.FilterVisualBar import EnergyTypeFilterBar
 
 
 DECK_BOXES_STYLE_FILE = os.path.join(USER_DATA_DIR, "deck_boxes.json")
@@ -45,90 +50,351 @@ def _save_deck_box_styles(data: dict):
         print(f"Error guardando estilos de portamazos: {e}")
 
 
-class DeckCardRowWidget(QFrame):
-    """Fila limpia (sin emojis) para una carta dentro del editor de mazo."""
+class DeckCardTileWidget(QFrame):
+    """
+    Tarjeta visual compacta de una carta dentro del Mazo (cuadrícula superior hasta 20 cols x 2 filas).
+    Muestra la carta, badge de cantidad, botones - / + para copias y X para quitar del mazo.
+    """
     quantity_changed = pyqtSignal()
     removed = pyqtSignal(str)  # card_key
 
-    def __init__(self, card_data, quantity=1, parent=None):
+    def __init__(self, card_data: dict, quantity: int = 1, parent=None):
         super().__init__(parent)
         self.card_data = card_data
         self.card_key = f"{card_data.get('id_api')}:{card_data.get('idioma', 'es')}"
+        self._quantity = max(1, int(quantity))
 
+        self.setFixedSize(78, 118)
         self.setStyleSheet("""
-            DeckCardRowWidget {
-                background-color: rgba(15, 23, 42, 0.85);
-                border: 1px solid rgba(56, 189, 248, 0.28);
+            DeckCardTileWidget {
+                background-color: rgba(15, 23, 42, 0.88);
+                border: 1.5px solid rgba(247, 168, 184, 0.45);
                 border-radius: 8px;
-                padding: 4px;
             }
-            DeckCardRowWidget:hover { border-color: #38bdf8; }
+            DeckCardTileWidget:hover {
+                border-color: #f56b7b;
+            }
         """)
 
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(6, 4, 6, 4)
-        layout.setSpacing(8)
+        vbox = QVBoxLayout(self)
+        vbox.setContentsMargins(3, 3, 3, 3)
+        vbox.setSpacing(2)
 
+        # Imagen de la carta
         self.lbl_img = QLabel(self)
-        self.lbl_img.setFixedSize(40, 56)
+        self.lbl_img.setFixedSize(70, 90)
+        self.lbl_img.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_img.setScaledContents(True)
+        self.lbl_img.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.lbl_img.setToolTip(f"{card_data.get('nombre', 'Carta')} ({card_data.get('edition', '')})")
 
         lang = card_data.get("idioma", "es")
         id_api = card_data.get("id_api")
-        nombre = card_data.get("nombre")
+        nombre = card_data.get("nombre", "")
 
-        pix = get_webp_pixmap(id_api, nombre, lang, size=(40, 56))
+        pix = get_webp_pixmap(id_api, nombre, lang, size=(70, 90))
         if not pix:
-            pix = get_pixmap_from_zip(nombre, size=(40, 56), id_api=id_api)
-        if pix:
-            self.lbl_img.setPixmap(pix)
-        else:
-            self.lbl_img.setText("TCG")
-            self.lbl_img.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.lbl_img.setStyleSheet("background: #1e293b; color: #94a3b8; font-weight: bold; font-size: 10px; border-radius: 4px;")
+            pix = get_pixmap_from_zip(nombre, size=(70, 90), id_api=id_api)
+        if not pix or pix.isNull():
+            pix = get_card_placeholder_pixmap((70, 90), nombre)
+        self.lbl_img.setPixmap(pix)
+        vbox.addWidget(self.lbl_img, alignment=Qt.AlignmentFlag.AlignCenter)
 
-        layout.addWidget(self.lbl_img)
-
-        info_vbox = QVBoxLayout()
-        info_vbox.setSpacing(2)
-        lbl_n = QLabel(nombre or "Carta", self)
-        lbl_n.setStyleSheet("font-weight: bold; font-size: 12px; color: #f8fafc; border: none;")
-        lbl_s = QLabel(f"ID: {id_api} | {card_data.get('edition', '')}", self)
-        lbl_s.setStyleSheet("font-size: 10px; color: #94a3b8; border: none;")
-        info_vbox.addWidget(lbl_n)
-        info_vbox.addWidget(lbl_s)
-        layout.addLayout(info_vbox, stretch=1)
-
-        self.spin_qty = QSpinBox(self)
-        self.spin_qty.setRange(1, 99)
-        self.spin_qty.setValue(quantity)
-        self.spin_qty.setFixedSize(48, 26)
-        self.spin_qty.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.spin_qty.setStyleSheet("""
-            QSpinBox {
-                background-color: #0f172a; color: #38bdf8; font-weight: bold;
-                border: 1px solid rgba(56, 189, 248, 0.4); border-radius: 4px;
+        # Badge flotante de copias sobre la esquina superior izquierda
+        self.lbl_qty_badge = QLabel(f"x{self._quantity}", self)
+        self.lbl_qty_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_qty_badge.setFixedSize(26, 17)
+        self.lbl_qty_badge.move(4, 4)
+        self.lbl_qty_badge.setStyleSheet("""
+            QLabel {
+                background-color: rgba(15, 23, 42, 225);
+                color: #fde047;
+                font-size: 10px;
+                font-weight: 800;
+                border: 1px solid #f59e0b;
+                border-radius: 6px;
             }
         """)
-        self.spin_qty.valueChanged.connect(lambda _: self.quantity_changed.emit())
-        layout.addWidget(self.spin_qty)
+        self.lbl_qty_badge.raise_()
 
-        btn_del = QPushButton("X", self)
-        btn_del.setFixedSize(26, 26)
-        btn_del.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_del.setToolTip(t("Quitar carta"))
-        btn_del.setStyleSheet("""
+        # Botón flotante X arriba a la derecha para quitar del mazo
+        self.btn_remove = QPushButton("X", self)
+        self.btn_remove.setFixedSize(18, 18)
+        self.btn_remove.move(self.width() - 21, 3)
+        self.btn_remove.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_remove.setToolTip(t("Quitar carta del mazo"))
+        self.btn_remove.setStyleSheet("""
             QPushButton {
-                background: rgba(239, 68, 68, 0.2); color: #ef4444; font-weight: bold;
-                border: 1px solid rgba(239, 68, 68, 0.4); border-radius: 4px;
+                background-color: rgba(220, 38, 38, 220);
+                color: #ffffff;
+                font-size: 9px;
+                font-weight: 800;
+                border: 1px solid #fca5a5;
+                border-radius: 9px;
+                padding: 0;
             }
-            QPushButton:hover { background: rgba(239, 68, 68, 0.45); color: white; }
+            QPushButton:hover {
+                background-color: #ef4444;
+            }
         """)
-        btn_del.clicked.connect(lambda: self.removed.emit(self.card_key))
-        layout.addWidget(btn_del)
+        self.btn_remove.clicked.connect(lambda: self.removed.emit(self.card_key))
+        self.btn_remove.raise_()
 
-    def get_quantity(self):
-        return self.spin_qty.value()
+        # Barra inferior compacta: -  N  +
+        ctrl_row = QHBoxLayout()
+        ctrl_row.setContentsMargins(0, 0, 0, 0)
+        ctrl_row.setSpacing(2)
+
+        btn_style = """
+            QPushButton {
+                background-color: #334155;
+                color: #ffffff;
+                font-size: 11px;
+                font-weight: 800;
+                border: none;
+                border-radius: 4px;
+                padding: 0;
+            }
+            QPushButton:hover { background-color: #f56b7b; }
+        """
+
+        btn_minus = QPushButton("-", self)
+        btn_minus.setFixedSize(20, 18)
+        btn_minus.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_minus.setStyleSheet(btn_style)
+        btn_minus.clicked.connect(self.decrement)
+
+        self.lbl_qty_small = QLabel(str(self._quantity), self)
+        self.lbl_qty_small.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_qty_small.setStyleSheet("color: #f8fafc; font-size: 10px; font-weight: 700; border: none; background: transparent;")
+
+        btn_plus = QPushButton("+", self)
+        btn_plus.setFixedSize(20, 18)
+        btn_plus.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_plus.setStyleSheet(btn_style)
+        btn_plus.clicked.connect(self.increment)
+
+        ctrl_row.addWidget(btn_minus)
+        ctrl_row.addWidget(self.lbl_qty_small, 1)
+        ctrl_row.addWidget(btn_plus)
+        vbox.addLayout(ctrl_row)
+
+    def set_quantity(self, qty: int):
+        self._quantity = max(1, min(99, int(qty)))
+        self.lbl_qty_badge.setText(f"x{self._quantity}")
+        self.lbl_qty_small.setText(str(self._quantity))
+        self.quantity_changed.emit()
+
+    def increment(self):
+        if self._quantity < 99:
+            self.set_quantity(self._quantity + 1)
+
+    def decrement(self):
+        if self._quantity <= 1:
+            self.removed.emit(self.card_key)
+        else:
+            self.set_quantity(self._quantity - 1)
+
+    def get_quantity(self) -> int:
+        return self._quantity
+
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._open_zoom()
+            return
+        super().mouseDoubleClickEvent(event)
+
+    def _open_zoom(self):
+        parent_win = self.window()
+        if not parent_win:
+            return
+        id_api = self.card_data.get("id_api")
+        nombre = self.card_data.get("nombre", "")
+        lang = self.card_data.get("idioma") or language_manager.current_language
+        pix = get_webp_pixmap(id_api, nombre, lang, size=(450, 630))
+        if not pix:
+            pix = get_pixmap_from_zip(nombre, size=(450, 630), id_api=id_api)
+        if not pix or pix.isNull():
+            pix = self.lbl_img.pixmap()
+        if pix and not pix.isNull():
+            origin_global = QRect(self.mapToGlobal(QPoint(0, 0)), self.size())
+            overlay = CardZoomOverlay(parent_win)
+            overlay.show_zoom(pix, origin_global, id_api=id_api, nombre_archivo=nombre.lower().replace(" ", "_"), idioma=lang)
+
+
+class DeckDropZoneFrame(QFrame):
+    """Zona superior receptora de Drag & Drop para las cartas del mazo (hasta 20 columnas x 2 filas)."""
+    card_dropped = pyqtSignal(dict)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAcceptDrops(True)
+        self.setObjectName("DeckDropZone")
+        self._set_highlight(False)
+
+    def _set_highlight(self, active: bool):
+        if active:
+            self.setStyleSheet("""
+                QFrame#DeckDropZone {
+                    background-color: rgba(30, 41, 59, 0.92);
+                    border: 2px dashed #f56b7b;
+                    border-radius: 12px;
+                }
+            """)
+        else:
+            self.setStyleSheet("""
+                QFrame#DeckDropZone {
+                    background-color: rgba(15, 23, 42, 0.80);
+                    border: 1.5px solid #f2c4ce;
+                    border-radius: 12px;
+                }
+            """)
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasFormat("application/x-pokebinder-deckcard"):
+            self._set_highlight(True)
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragLeaveEvent(self, event):
+        self._set_highlight(False)
+        super().dragLeaveEvent(event)
+
+    def dropEvent(self, event):
+        self._set_highlight(False)
+        raw = event.mimeData().data("application/x-pokebinder-deckcard")
+        if raw:
+            try:
+                card_data = json.loads(bytes(raw).decode("utf-8"))
+                self.card_dropped.emit(card_data)
+                event.acceptProposedAction()
+                return
+            except Exception as e:
+                print(f"Error procesando drop de carta en mazo: {e}")
+        event.ignore()
+
+
+class DraggableCollectionCardWidget(QFrame):
+    """Carta navegable de la colección del usuario; se puede arrastrar al mazo o agregar con clic/+."""
+    quick_add_requested = pyqtSignal(dict)
+
+    def __init__(self, card_data: dict, pixmap: QPixmap, in_deck_qty: int = 0, parent=None):
+        super().__init__(parent)
+        self.card_data = card_data
+        self.card_key = f"{card_data.get('id_api')}:{card_data.get('idioma', 'es')}"
+        self._drag_start = QPoint()
+
+        self.setFixedSize(108, 152)
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
+        self.setStyleSheet("""
+            DraggableCollectionCardWidget {
+                background-color: #ffffff;
+                border: 1.5px solid #f2c4ce;
+                border-radius: 9px;
+            }
+            DraggableCollectionCardWidget:hover {
+                border: 2px solid #f56b7b;
+                background-color: #fff5f7;
+            }
+        """)
+
+        vbox = QVBoxLayout(self)
+        vbox.setContentsMargins(4, 4, 4, 4)
+        vbox.setSpacing(0)
+
+        self.lbl_img = QLabel(self)
+        self.lbl_img.setFixedSize(100, 142)
+        self.lbl_img.setScaledContents(True)
+        self.lbl_img.setPixmap(pixmap)
+        self.lbl_img.setToolTip(
+            f"{card_data.get('nombre', 'Carta')} | {card_data.get('edition', '')}\n"
+            f"Arrastra al mazo o haz doble clic para agregar"
+        )
+        vbox.addWidget(self.lbl_img, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        # Indicador de cuántas copias de esta carta ya están en el mazo
+        self.lbl_in_deck = QLabel("", self)
+        self.lbl_in_deck.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_in_deck.setFixedSize(30, 18)
+        self.lbl_in_deck.move(5, 5)
+        self.lbl_in_deck.setStyleSheet("""
+            QLabel {
+                background-color: rgba(16, 185, 129, 230);
+                color: #ffffff;
+                font-size: 10px;
+                font-weight: 800;
+                border: 1px solid #a7f3d0;
+                border-radius: 7px;
+            }
+        """)
+        self.set_in_deck_qty(in_deck_qty)
+
+        # Botón rápido + abajo a la derecha
+        self.btn_add = QPushButton("+", self)
+        self.btn_add.setFixedSize(22, 22)
+        self.btn_add.move(self.width() - 26, self.height() - 26)
+        self.btn_add.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_add.setToolTip(t("Agregar copia al mazo"))
+        self.btn_add.setStyleSheet("""
+            QPushButton {
+                background-color: #f56b7b;
+                color: #ffffff;
+                font-size: 13px;
+                font-weight: 800;
+                border: 1.5px solid #ffffff;
+                border-radius: 11px;
+                padding: 0;
+            }
+            QPushButton:hover {
+                background-color: #d44854;
+            }
+        """)
+        self.btn_add.clicked.connect(lambda: self.quick_add_requested.emit(self.card_data))
+        self.btn_add.raise_()
+
+    def set_card_pixmap(self, pixmap: QPixmap):
+        if pixmap and not pixmap.isNull():
+            self.lbl_img.setPixmap(
+                pixmap.scaled(100, 142, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            )
+            self.lbl_in_deck.raise_()
+            self.btn_add.raise_()
+
+    def set_in_deck_qty(self, qty: int):
+        if qty > 0:
+            self.lbl_in_deck.setText(f"x{qty}")
+            self.lbl_in_deck.show()
+            self.lbl_in_deck.raise_()
+        else:
+            self.lbl_in_deck.hide()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_start = event.pos()
+        super().mousePressEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.quick_add_requested.emit(self.card_data)
+            return
+        super().mouseDoubleClickEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if not (event.buttons() & Qt.MouseButton.LeftButton):
+            return
+        if (event.pos() - self._drag_start).manhattanLength() >= QApplication.startDragDistance():
+            drag = QDrag(self)
+            mime = QMimeData()
+            payload = json.dumps(self.card_data, ensure_ascii=False).encode("utf-8")
+            mime.setData("application/x-pokebinder-deckcard", payload)
+            drag.setMimeData(mime)
+            pix = self.lbl_img.pixmap()
+            if pix and not pix.isNull():
+                scaled = pix.scaled(76, 106, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                drag.setPixmap(scaled)
+                drag.setHotSpot(QPoint(scaled.width() // 2, scaled.height() // 2))
+            drag.exec(Qt.DropAction.CopyAction)
 
 
 class DeckBoxCustomizeDialog(QDialog):
@@ -157,7 +423,6 @@ class DeckBoxCustomizeDialog(QDialog):
         root.setContentsMargins(20, 18, 20, 18)
         root.setSpacing(20)
 
-        # Izquierda: Vista previa 3D viva del Portamazos
         preview_col = QVBoxLayout()
         preview_col.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lbl_prev = QLabel(t("Vista previa 3D"))
@@ -174,7 +439,6 @@ class DeckBoxCustomizeDialog(QDialog):
         preview_col.addWidget(self.preview_box, alignment=Qt.AlignmentFlag.AlignCenter)
         root.addLayout(preview_col)
 
-        # Derecha: Controles de personalización
         form_col = QVBoxLayout()
         form_col.setSpacing(10)
 
@@ -293,11 +557,16 @@ class DeckBoxCustomizeDialog(QDialog):
 
 class MazosView(QWidget):
     """
-    Sección de Mazos remodelada con Portamazos físicos 3D personalizables (Issue #19, sin emojis):
-      - Vista Home: Estantería de Portamazos 3D con diseños y colores propios + hover Bookshelf Peek
-      - Apertura y cierre 3D: La tapa magnética del portamazos se abre/cierra revelando las cartas
-      - Vista Editor: Edición completa de cartas, búsqueda en colección, importación y guardado
+    Sección de Mazos con Portamazos físicos 3D personalizables + Constructor Visual Drag & Drop:
+      - Vista Home: Estantería de Portamazos 3D con apertura/cierre animado
+      - Vista Editor:
+          * Zona Superior: Cuadrícula visual de cartas del mazo (hasta 20 columnas x 2 filas) con - / + y X
+          * Zona Inferior (mayor espacio): Navegador visual de tu colección para arrastrar cartas al mazo,
+            con botón desplegable "Filtros" (nombre, rareza, tipo, edición, etapa, idioma, carpeta y barra de energías)
     """
+
+    COL_PER_PAGE = 24
+    DECK_MAX_COLS = 20
 
     def __init__(self, usuario, parent=None):
         super().__init__(parent)
@@ -305,10 +574,18 @@ class MazosView(QWidget):
         self.session = SessionLocal()
 
         self.mazo_actual = None
-        self.card_rows = {}  # card_key -> DeckCardRowWidget
+        self.deck_tiles = {}          # card_key -> DeckCardTileWidget
+        self.deck_order = []          # ordered list of card_keys
         self._deck_styles = _load_deck_box_styles()
-        self._deck_box_widgets = {}  # mazo_id -> DeckBoxWidget
+        self._deck_box_widgets = {}   # mazo_id -> DeckBoxWidget
         self._active_overlay = None
+
+        # Estado del navegador de colección inferior
+        self.col_page = 0
+        self.col_total = 0
+        self.col_widgets_by_key = {}  # card_key -> list[DraggableCollectionCardWidget]
+        self.col_image_loader = CardImageLoaderManager(max_threads=6, parent=self)
+        self.col_image_loader.image_ready.connect(self._on_col_async_image_ready)
 
         self.init_ui()
         self.mostrar_estanteria_mazos(animate_close=False)
@@ -317,7 +594,6 @@ class MazosView(QWidget):
         entry = self._deck_styles.get(str(mazo_id))
         if isinstance(entry, dict):
             return resolve_design_key(entry.get("design", "Charizard Fuego")), entry.get("color", "auto")
-        # Asignar diseño variado por defecto a mazos antiguos sin estilo guardado
         default_design = _DEFAULT_DESIGN_KEYS[int(mazo_id) % len(_DEFAULT_DESIGN_KEYS)]
         return default_design, "auto"
 
@@ -336,16 +612,15 @@ class MazosView(QWidget):
         self.main_stack = QStackedWidget(self)
         root_layout.addWidget(self.main_stack)
 
-        # Pantalla 1: Estantería de Portamazos 3D
         self.decks_home_widget = QWidget()
         self._setup_home_view()
         self.main_stack.addWidget(self.decks_home_widget)
 
-        # Pantalla 2: Editor interno del Mazo
         self.deck_editor_widget = QWidget()
         self._setup_editor_view()
         self.main_stack.addWidget(self.deck_editor_widget)
 
+    # ── PANTALLA 1: Estantería de Portamazos 3D ────────────────────────────────
     def _setup_home_view(self):
         layout = QVBoxLayout(self.decks_home_widget)
         layout.setContentsMargins(28, 22, 28, 22)
@@ -400,29 +675,30 @@ class MazosView(QWidget):
 
         layout.addWidget(self.decks_scroll, 1)
 
+    # ── PANTALLA 2: Constructor Visual del Mazo (Arriba: Mazo 20x2 | Abajo: Mi Colección) ──
     def _setup_editor_view(self):
         layout = QVBoxLayout(self.deck_editor_widget)
-        layout.setContentsMargins(20, 16, 20, 14)
-        layout.setSpacing(10)
+        layout.setContentsMargins(14, 10, 14, 10)
+        layout.setSpacing(8)
 
-        # Barra superior del editor
+        # 1. Header compacto del Mazo
         header_row = QHBoxLayout()
         header_row.setSpacing(10)
 
         self.btn_back_decks = QPushButton(t("Volver a Mazos"))
-        self.btn_back_decks.setFixedHeight(32)
+        self.btn_back_decks.setFixedHeight(30)
         self.btn_back_decks.setProperty("class", "pill")
         self.btn_back_decks.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_back_decks.clicked.connect(lambda: self.mostrar_estanteria_mazos(animate_close=True))
         header_row.addWidget(self.btn_back_decks)
 
         self.editor_mini_box = DeckBoxWidget(name="Mazo", design="Charizard Fuego", color="auto", card_count=0)
-        self.editor_mini_box.setFixedSize(44, 54)
-        self.editor_mini_box.setMinimumSize(44, 54)
+        self.editor_mini_box.setFixedSize(38, 46)
+        self.editor_mini_box.setMinimumSize(38, 46)
         header_row.addWidget(self.editor_mini_box)
 
         self.lbl_mazo_nombre = QLabel(t("Selecciona un mazo"))
-        self.lbl_mazo_nombre.setStyleSheet("font-size: 18px; font-weight: 700; color: #5a2a3a;")
+        self.lbl_mazo_nombre.setStyleSheet("font-size: 17px; font-weight: 700; color: #5a2a3a;")
         header_row.addWidget(self.lbl_mazo_nombre)
 
         header_row.addStretch()
@@ -438,93 +714,561 @@ class MazosView(QWidget):
         self.btn_customize_deck.clicked.connect(self.personalizar_mazo_actual)
         header_row.addWidget(self.btn_customize_deck)
 
-        layout.addLayout(header_row)
-
-        # Fila de búsqueda en colección + importar desde texto
-        row_search = QHBoxLayout()
-        row_search.setSpacing(8)
-
-        self.input_card_search = QLineEdit(self)
-        self.input_card_search.setPlaceholderText(t("Buscar carta en mi colección..."))
-        self.input_card_search.setStyleSheet("""
-            QLineEdit {
-                background-color: #ffffff; color: #3f2730;
-                border: 1.5px solid #f29ca4; border-radius: 8px; padding: 8px 10px;
-            }
-            QLineEdit:focus { border-color: #f56b7b; }
-        """)
-        self.input_card_search.textChanged.connect(self.on_card_search_text_changed)
-        row_search.addWidget(self.input_card_search, stretch=1)
-
-        btn_import = QPushButton(t("Importar desde Texto"), self)
-        btn_import.setFixedHeight(34)
-        btn_import.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_import.setStyleSheet("""
-            QPushButton {
-                background-color: #0284c7; color: white; font-weight: bold; border-radius: 8px; padding: 6px 14px;
-            }
-            QPushButton:hover { background-color: #0369a1; }
-        """)
-        btn_import.clicked.connect(self.importar_mazo_texto)
-        row_search.addWidget(btn_import)
-
-        layout.addLayout(row_search)
-
-        # Sugerencias de cartas
-        self.list_card_suggestions = QListWidget(self)
-        self.list_card_suggestions.setMaximumHeight(130)
-        self.list_card_suggestions.hide()
-        self.list_card_suggestions.setStyleSheet("""
-            QListWidget {
-                background-color: #0f172a; color: #f8fafc; border: 1.5px solid #38bdf8; border-radius: 8px;
-            }
-            QListWidget::item { padding: 6px 8px; }
-            QListWidget::item:hover { background-color: #1e293b; color: #38bdf8; }
-            QListWidget::item:selected { background-color: #0284c7; color: white; }
-        """)
-        self.list_card_suggestions.itemClicked.connect(self.on_suggestion_clicked)
-        layout.addWidget(self.list_card_suggestions)
-
-        # Lista de cartas del mazo
-        self.scroll = QScrollArea(self)
-        self.scroll.setWidgetResizable(True)
-        self.scroll.setStyleSheet("""
-            QScrollArea {
-                background-color: rgba(15, 23, 42, 0.72);
-                border: 1.5px solid #f2c4ce;
-                border-radius: 12px;
-            }
-        """)
-
-        self.cards_container = QWidget()
-        self.cards_container.setStyleSheet("background: transparent;")
-        self.cards_vbox = QVBoxLayout(self.cards_container)
-        self.cards_vbox.setContentsMargins(10, 10, 10, 10)
-        self.cards_vbox.setSpacing(6)
-        self.cards_vbox.addStretch()
-
-        self.scroll.setWidget(self.cards_container)
-        layout.addWidget(self.scroll, 1)
-
-        # Barra inferior de guardado
-        bottom_row = QHBoxLayout()
-        bottom_row.addStretch()
         self.btn_guardar = QPushButton(t("Guardar Mazo"), self)
-        self.btn_guardar.setFixedSize(220, 40)
+        self.btn_guardar.setFixedHeight(32)
         self.btn_guardar.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_guardar.setStyleSheet("""
             QPushButton {
-                background-color: #10b981; color: white; font-weight: bold; font-size: 14px; border-radius: 10px;
+                background-color: #10b981; color: white; font-weight: 700;
+                font-size: 12px; border-radius: 9px; padding: 4px 16px;
             }
             QPushButton:hover { background-color: #059669; }
         """)
         self.btn_guardar.clicked.connect(self.guardar_mazo_actual)
-        bottom_row.addWidget(self.btn_guardar)
-        bottom_row.addStretch()
-        layout.addLayout(bottom_row)
+        header_row.addWidget(self.btn_guardar)
 
+        layout.addLayout(header_row)
+
+        # 2. ZONA SUPERIOR: Cartas en el Mazo (hasta 20 columnas x 2 filas, acepta Drag & Drop)
+        self.deck_drop_zone = DeckDropZoneFrame(self)
+        self.deck_drop_zone.setFixedHeight(252)
+        self.deck_drop_zone.card_dropped.connect(self._on_card_dropped_in_deck)
+
+        drop_vbox = QVBoxLayout(self.deck_drop_zone)
+        drop_vbox.setContentsMargins(8, 6, 8, 6)
+        drop_vbox.setSpacing(4)
+
+        self.deck_scroll = QScrollArea(self.deck_drop_zone)
+        self.deck_scroll.setWidgetResizable(True)
+        self.deck_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.deck_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.deck_scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+
+        self.deck_grid_container = QWidget()
+        self.deck_grid_container.setStyleSheet("background: transparent;")
+        self.deck_grid = QGridLayout(self.deck_grid_container)
+        self.deck_grid.setContentsMargins(2, 2, 2, 2)
+        self.deck_grid.setSpacing(6)
+        self.deck_grid.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        self.deck_scroll.setWidget(self.deck_grid_container)
+
+        self.lbl_deck_empty_hint = QLabel(
+            t("Arrastra cartas desde tu colección aquí abajo o haz doble clic para agregarlas a tu mazo")
+        )
+        self.lbl_deck_empty_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_deck_empty_hint.setStyleSheet(
+            "color: #cbd5e1; font-size: 13px; font-weight: 600; background: transparent; border: none;"
+        )
+
+        drop_vbox.addWidget(self.deck_scroll, 1)
+        layout.addWidget(self.deck_drop_zone)
+
+        # 3. ZONA INFERIOR (mayor espacio): Navegador Visual de Mi Colección + Filtros Desplegables
+        col_panel = QFrame(self)
+        col_panel.setObjectName("DeckCollectionPanel")
+        col_panel.setStyleSheet("""
+            QFrame#DeckCollectionPanel {
+                background-color: #fff6f8;
+                border: 1.5px solid #f3c8d1;
+                border-radius: 12px;
+            }
+        """)
+        col_vbox = QVBoxLayout(col_panel)
+        col_vbox.setContentsMargins(10, 8, 10, 8)
+        col_vbox.setSpacing(6)
+
+        # Barra superior de Mi Colección con botón desplegable "Filtros"
+        col_top_row = QHBoxLayout()
+        col_top_row.setSpacing(8)
+
+        lbl_col_title = QLabel(t("Mi Colección"))
+        lbl_col_title.setStyleSheet("font-size: 14px; font-weight: 700; color: #5a2a3a; border: none; background: transparent;")
+        col_top_row.addWidget(lbl_col_title)
+
+        self.lbl_col_count = QLabel("")
+        self.lbl_col_count.setStyleSheet("font-size: 11px; font-weight: 600; color: #8c5a69; border: none; background: transparent;")
+        col_top_row.addWidget(self.lbl_col_count)
+
+        col_top_row.addStretch()
+
+        self.btn_toggle_filters = QPushButton(t("Filtros"))
+        self.btn_toggle_filters.setCheckable(True)
+        self.btn_toggle_filters.setChecked(False)
+        self.btn_toggle_filters.setFixedHeight(28)
+        self.btn_toggle_filters.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_toggle_filters.clicked.connect(self._toggle_filters_drawer)
+        self._refresh_filter_btn_style()
+        col_top_row.addWidget(self.btn_toggle_filters)
+
+        col_vbox.addLayout(col_top_row)
+
+        # Panel desplegable de filtros (oculto inicialmente para maximizar espacio de cartas)
+        self.filters_drawer = QFrame(col_panel)
+        self.filters_drawer.setObjectName("DeckFiltersDrawer")
+        self.filters_drawer.setStyleSheet("""
+            QFrame#DeckFiltersDrawer {
+                background-color: #ffeef2;
+                border: 1px solid #f2b8c3;
+                border-radius: 9px;
+            }
+        """)
+        drawer_vbox = QVBoxLayout(self.filters_drawer)
+        drawer_vbox.setContentsMargins(8, 6, 8, 6)
+        drawer_vbox.setSpacing(6)
+
+        # Fila 1 del drawer: Nombre + Carpeta + Idioma + Limpiar
+        f_row1 = QHBoxLayout()
+        f_row1.setSpacing(6)
+
+        self.col_search = QLineEdit()
+        self.col_search.setPlaceholderText(t("Filtrar por nombre..."))
+        self.col_search.setFixedHeight(28)
+        self.col_search.setStyleSheet("""
+            QLineEdit {
+                background: #ffffff; color: #3f2730; border: 1px solid #f29ca4;
+                border-radius: 7px; padding: 2px 8px; font-size: 12px;
+            }
+        """)
+        self.col_search_timer = QTimer(self)
+        self.col_search_timer.setSingleShot(True)
+        self.col_search_timer.timeout.connect(self._reset_col_page_and_load)
+        self.col_search.textChanged.connect(lambda _: self.col_search_timer.start(220))
+        f_row1.addWidget(self.col_search, 2)
+
+        combo_f_style = """
+            QComboBox {
+                background: #ffffff; color: #3f2730; border: 1px solid #f29ca4;
+                border-radius: 7px; padding: 2px 8px; font-size: 11px;
+            }
+        """
+
+        self.col_combo_carpeta = QComboBox()
+        self.col_combo_carpeta.setFixedHeight(28)
+        self.col_combo_carpeta.setStyleSheet(combo_f_style)
+        self.col_combo_carpeta.currentIndexChanged.connect(self._reset_col_page_and_load)
+        f_row1.addWidget(self.col_combo_carpeta, 1)
+
+        self.col_combo_idioma = QComboBox()
+        self.col_combo_idioma.setFixedHeight(28)
+        self.col_combo_idioma.setStyleSheet(combo_f_style)
+        self.col_combo_idioma.addItem(f"{t('Idioma')}: {t('Todos')}", None)
+        self.col_combo_idioma.addItem("Español", "es")
+        self.col_combo_idioma.addItem("English", "en")
+        self.col_combo_idioma.addItem("日本語", "ja")
+        self.col_combo_idioma.addItem("Français", "fr")
+        self.col_combo_idioma.addItem("Português", "pt")
+        self.col_combo_idioma.addItem("繁體中文", "zh")
+        self.col_combo_idioma.currentIndexChanged.connect(self._reset_col_page_and_load)
+        f_row1.addWidget(self.col_combo_idioma, 1)
+
+        btn_clean_f = QPushButton(t("Limpiar"))
+        btn_clean_f.setFixedHeight(28)
+        btn_clean_f.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_clean_f.setStyleSheet("""
+            QPushButton {
+                background: #ffffff; color: #5a2a3a; border: 1px solid #f29ca4;
+                border-radius: 7px; padding: 2px 10px; font-size: 11px; font-weight: 600;
+            }
+            QPushButton:hover { background: #ffdfe6; }
+        """)
+        btn_clean_f.clicked.connect(self._limpiar_filtros_coleccion)
+        f_row1.addWidget(btn_clean_f)
+        drawer_vbox.addLayout(f_row1)
+
+        # Fila 2 del drawer: Rareza, Tipo, Edición, Etapa, Entrenador
+        f_row2 = QHBoxLayout()
+        f_row2.setSpacing(6)
+        self.col_filtros = {}
+        for etiqueta, columna in (
+            ("Rareza", "rarity"),
+            ("Tipo", "type"),
+            ("Edición", "edition"),
+            ("Etapa", "stage"),
+            ("Entrenador", "trainer"),
+        ):
+            cb = QComboBox()
+            cb.setFixedHeight(28)
+            cb.setStyleSheet(combo_f_style)
+            cb.addItem(f"{t(etiqueta)}: {t('Todos')}")
+            cb.currentIndexChanged.connect(self._reset_col_page_and_load)
+            self.col_filtros[columna] = cb
+            f_row2.addWidget(cb, 1)
+        drawer_vbox.addLayout(f_row2)
+
+        # Fila 3 del drawer: Barra visual complementaria de Energías Pokémon (sin control de zoom)
+        self.col_energy_bar = EnergyTypeFilterBar(self.filters_drawer)
+        self.col_energy_bar.lbl_zoom.hide()
+        for zb in self.col_energy_bar._zoom_buttons.values():
+            zb.hide()
+        self.col_energy_bar.type_selected.connect(self._on_col_energy_pill_selected)
+        self.col_filtros["type"].currentIndexChanged.connect(self._sync_col_energy_from_combo)
+        drawer_vbox.addWidget(self.col_energy_bar)
+
+        self.filters_drawer.setVisible(False)
+        col_vbox.addWidget(self.filters_drawer)
+
+        # Cuadrícula desplazable de cartas de Mi Colección
+        self.col_scroll = QScrollArea(col_panel)
+        self.col_scroll.setWidgetResizable(True)
+        self.col_scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+
+        self.col_grid_container = QWidget()
+        self.col_grid_container.setStyleSheet("background: transparent;")
+        self.col_grid = QGridLayout(self.col_grid_container)
+        self.col_grid.setContentsMargins(2, 2, 2, 2)
+        self.col_grid.setSpacing(8)
+        self.col_grid.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        self.col_scroll.setWidget(self.col_grid_container)
+        col_vbox.addWidget(self.col_scroll, 1)
+
+        # Paginación compacta de la colección
+        pag_row = QHBoxLayout()
+        pag_row.setContentsMargins(0, 0, 0, 0)
+        pag_row.setSpacing(10)
+
+        self.btn_col_prev = QPushButton(t("Anterior"))
+        self.btn_col_prev.setFixedHeight(26)
+        self.btn_col_prev.setProperty("class", "pill")
+        self.btn_col_prev.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_col_prev.clicked.connect(self._col_prev_page)
+
+        self.lbl_col_page = QLabel("")
+        self.lbl_col_page.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_col_page.setStyleSheet("font-size: 11px; font-weight: 700; color: #5a2a3a; border: none; background: transparent;")
+
+        self.btn_col_next = QPushButton(t("Siguiente"))
+        self.btn_col_next.setFixedHeight(26)
+        self.btn_col_next.setProperty("class", "pill")
+        self.btn_col_next.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_col_next.clicked.connect(self._col_next_page)
+
+        pag_row.addStretch()
+        pag_row.addWidget(self.btn_col_prev)
+        pag_row.addWidget(self.lbl_col_page)
+        pag_row.addWidget(self.btn_col_next)
+        pag_row.addStretch()
+        col_vbox.addLayout(pag_row)
+
+        layout.addWidget(col_panel, 1)
+
+    # ── Helpers de Filtros Desplegables de Mi Colección ────────────────────────
+    def _refresh_filter_btn_style(self):
+        opened = self.btn_toggle_filters.isChecked()
+        self.btn_toggle_filters.setText(t("Ocultar Filtros") if opened else t("Filtros"))
+        if opened:
+            self.btn_toggle_filters.setStyleSheet("""
+                QPushButton {
+                    background-color: #f56b7b; color: #ffffff; font-size: 11px; font-weight: 700;
+                    border: 1.5px solid #d44854; border-radius: 9px; padding: 2px 14px;
+                }
+                QPushButton:hover { background-color: #e05263; }
+            """)
+        else:
+            self.btn_toggle_filters.setStyleSheet("""
+                QPushButton {
+                    background-color: #ffffff; color: #5a2a3a; font-size: 11px; font-weight: 700;
+                    border: 1.5px solid #f2b8c3; border-radius: 9px; padding: 2px 14px;
+                }
+                QPushButton:hover { background-color: #ffdfe6; border-color: #f56b7b; }
+            """)
+
+    def _toggle_filters_drawer(self):
+        self.filters_drawer.setVisible(self.btn_toggle_filters.isChecked())
+        self._refresh_filter_btn_style()
+
+    def _cargar_opciones_filtros_coleccion(self):
+        # Carpetas de colección
+        self.col_combo_carpeta.blockSignals(True)
+        self.col_combo_carpeta.clear()
+        self.col_combo_carpeta.addItem(f"{t('Carpeta')}: {t('Todas')}", None)
+        for cat in obtener_categorias_usuario(self.usuario):
+            self.col_combo_carpeta.addItem(cat, cat)
+        self.col_combo_carpeta.blockSignals(False)
+
+        # Combos dinámicos a partir de las cartas presentes en la colección del usuario
+        for columna, combo in self.col_filtros.items():
+            combo.blockSignals(True)
+            first_lbl = combo.itemText(0)
+            combo.clear()
+            combo.addItem(first_lbl)
+            vals = (
+                self.session.query(getattr(Cartas, columna))
+                .join(
+                    UsuarioCarta,
+                    and_(
+                        Cartas.id_api == UsuarioCarta.carta_id,
+                        func.coalesce(Cartas.idioma, "es") == func.coalesce(UsuarioCarta.idioma, "es"),
+                    ),
+                )
+                .filter(UsuarioCarta.usuario_nombre == self.usuario)
+                .filter(getattr(Cartas, columna).isnot(None))
+                .distinct()
+                .all()
+            )
+            for v in sorted(x[0] for x in vals if x[0]):
+                combo.addItem(v)
+            combo.blockSignals(False)
+
+    def _on_col_energy_pill_selected(self, type_val):
+        combo = self.col_filtros.get("type")
+        if not combo:
+            return
+        combo.blockSignals(True)
+        if not type_val:
+            combo.setCurrentIndex(0)
+        else:
+            idx = combo.findText(type_val, Qt.MatchFlag.MatchFixedString)
+            if idx < 0 and type_val == "Lightning":
+                idx = combo.findText("Electric", Qt.MatchFlag.MatchFixedString)
+            combo.setCurrentIndex(idx if idx >= 0 else 0)
+        combo.blockSignals(False)
+        self._reset_col_page_and_load()
+
+    def _sync_col_energy_from_combo(self):
+        combo = self.col_filtros.get("type")
+        if combo:
+            val = combo.currentText() if combo.currentIndex() > 0 else None
+            self.col_energy_bar.set_active_type(val)
+
+    def _limpiar_filtros_coleccion(self):
+        self.col_search.blockSignals(True)
+        self.col_search.clear()
+        self.col_search.blockSignals(False)
+
+        self.col_combo_carpeta.blockSignals(True)
+        self.col_combo_carpeta.setCurrentIndex(0)
+        self.col_combo_carpeta.blockSignals(False)
+
+        self.col_combo_idioma.blockSignals(True)
+        self.col_combo_idioma.setCurrentIndex(0)
+        self.col_combo_idioma.blockSignals(False)
+
+        for cb in self.col_filtros.values():
+            cb.blockSignals(True)
+            cb.setCurrentIndex(0)
+            cb.blockSignals(False)
+        self.col_energy_bar.set_active_type(None)
+        self._reset_col_page_and_load()
+
+    def _reset_col_page_and_load(self):
+        self.col_page = 0
+        self.cargar_coleccion_navegador()
+
+    def _col_prev_page(self):
+        if self.col_page > 0:
+            self.col_page -= 1
+            self.cargar_coleccion_navegador()
+
+    def _col_next_page(self):
+        total_pages = max(1, (self.col_total + self.COL_PER_PAGE - 1) // self.COL_PER_PAGE)
+        if self.col_page < total_pages - 1:
+            self.col_page += 1
+            self.cargar_coleccion_navegador()
+
+    def cargar_coleccion_navegador(self):
+        """Carga las cartas de la colección del usuario en la cuadrícula inferior arrastrable."""
+        self.col_widgets_by_key.clear()
+        while self.col_grid.count():
+            item = self.col_grid.takeAt(0)
+            if item and item.widget():
+                item.widget().deleteLater()
+
+        q = (
+            self.session.query(Cartas)
+            .join(
+                UsuarioCarta,
+                and_(
+                    Cartas.id_api == UsuarioCarta.carta_id,
+                    func.coalesce(Cartas.idioma, "es") == func.coalesce(UsuarioCarta.idioma, "es"),
+                ),
+            )
+            .filter(UsuarioCarta.usuario_nombre == self.usuario)
+        )
+
+        txt = self.col_search.text().strip().lower()
+        if txt:
+            q = q.filter(Cartas.nombre.ilike(f"%{txt}%"))
+
+        carpeta = self.col_combo_carpeta.currentData()
+        if carpeta:
+            q = q.filter(UsuarioCarta.categoria == carpeta)
+
+        lang = self.col_combo_idioma.currentData()
+        if lang:
+            q = q.filter(Cartas.idioma == lang)
+
+        for columna, cb in self.col_filtros.items():
+            if cb.currentIndex() > 0:
+                q = q.filter(getattr(Cartas, columna) == cb.currentText())
+
+        self.col_total = q.count()
+        self.lbl_col_count.setText(f"({self.col_total} cartas)")
+
+        cartas = (
+            q.order_by(Cartas.nombre.asc())
+            .limit(self.COL_PER_PAGE)
+            .offset(self.col_page * self.COL_PER_PAGE)
+            .all()
+        )
+
+        # Calcular columnas según ancho disponible (mínimo 6)
+        avail_w = max(680, self.col_scroll.viewport().width() - 16)
+        cols = max(6, avail_w // 118)
+
+        row, col = 0, 0
+        for carta in cartas:
+            c_lang = carta.idioma or "es"
+            card_key = f"{carta.id_api}:{c_lang}"
+            card_data = {
+                "id_api": carta.id_api,
+                "nombre": carta.nombre,
+                "idioma": c_lang,
+                "edition": carta.edition or "",
+            }
+
+            pix = get_webp_pixmap(carta.id_api, carta.nombre, c_lang, size=(100, 142))
+            needs_dl = False
+            if not pix:
+                pix = get_pixmap_from_zip(carta.nombre.lower().replace(" ", "_"), size=(100, 142), id_api=carta.id_api)
+            if not pix or pix.isNull():
+                pix = get_card_placeholder_pixmap((100, 142), carta.nombre)
+                needs_dl = True
+
+            in_deck_qty = self.deck_tiles[card_key].get_quantity() if card_key in self.deck_tiles else 0
+            cw = DraggableCollectionCardWidget(card_data, pix, in_deck_qty=in_deck_qty, parent=self.col_grid_container)
+            cw.quick_add_requested.connect(self._on_card_dropped_in_deck)
+            self.col_grid.addWidget(cw, row, col)
+            self.col_widgets_by_key.setdefault(card_key, []).append(cw)
+
+            if needs_dl:
+                self.col_image_loader.request_image(
+                    card_key,
+                    carta.id_api,
+                    carta.nombre,
+                    idioma=c_lang,
+                    set_id=getattr(carta, "set_id", None),
+                    number=getattr(carta, "number", None),
+                )
+
+            col += 1
+            if col >= cols:
+                col = 0
+                row += 1
+
+        total_pages = max(1, (self.col_total + self.COL_PER_PAGE - 1) // self.COL_PER_PAGE)
+        self.lbl_col_page.setText(f"{t('Página')} {self.col_page + 1} {t('de')} {total_pages}")
+        self.btn_col_prev.setEnabled(self.col_page > 0)
+        self.btn_col_next.setEnabled(self.col_page < total_pages - 1)
+
+    def _on_col_async_image_ready(self, card_key: str, local_path: str):
+        widgets = self.col_widgets_by_key.get(card_key)
+        if not widgets or not os.path.exists(local_path):
+            return
+        pix = QPixmap(local_path)
+        if pix.isNull():
+            return
+        for w in list(widgets):
+            try:
+                w.set_card_pixmap(pix)
+            except RuntimeError:
+                pass
+
+    def _sync_collection_badges_for_key(self, card_key: str):
+        qty = self.deck_tiles[card_key].get_quantity() if card_key in self.deck_tiles else 0
+        for w in self.col_widgets_by_key.get(card_key, []):
+            try:
+                w.set_in_deck_qty(qty)
+            except RuntimeError:
+                pass
+
+    # ── Gestión de la Cuadrícula del Mazo (20 columnas x 2 filas) ──────────────
+    def _reflow_deck_grid(self):
+        while self.deck_grid.count():
+            self.deck_grid.takeAt(0)
+
+        if not self.deck_order:
+            self.lbl_deck_empty_hint.show()
+            self.deck_grid.addWidget(self.lbl_deck_empty_hint, 0, 0, Qt.AlignmentFlag.AlignCenter)
+            return
+
+        self.lbl_deck_empty_hint.hide()
+        for idx, card_key in enumerate(self.deck_order):
+            tile = self.deck_tiles.get(card_key)
+            if not tile:
+                continue
+            r = idx // self.DECK_MAX_COLS
+            c = idx % self.DECK_MAX_COLS
+            self.deck_grid.addWidget(tile, r, c)
+
+    def _on_card_dropped_in_deck(self, card_data: dict):
+        if not self.mazo_actual:
+            return
+        self.agregar_carta_tile(card_data, quantity=1)
+
+    def agregar_carta_tile(self, card_data: dict, quantity: int = 1):
+        card_key = f"{card_data.get('id_api')}:{card_data.get('idioma', 'es')}"
+        if card_key in self.deck_tiles:
+            tile = self.deck_tiles[card_key]
+            tile.set_quantity(tile.get_quantity() + quantity)
+        else:
+            tile = DeckCardTileWidget(card_data, quantity=quantity, parent=self.deck_grid_container)
+            tile.quantity_changed.connect(lambda k=card_key: self._on_tile_qty_changed(k))
+            tile.removed.connect(self.remover_carta_tile)
+            self.deck_tiles[card_key] = tile
+            self.deck_order.append(card_key)
+            self._reflow_deck_grid()
+        self._sync_collection_badges_for_key(card_key)
+        self.actualizar_conteo()
+
+    def _on_tile_qty_changed(self, card_key: str):
+        self._sync_collection_badges_for_key(card_key)
+        self.actualizar_conteo()
+
+    def remover_carta_tile(self, card_key: str):
+        tile = self.deck_tiles.pop(card_key, None)
+        if card_key in self.deck_order:
+            self.deck_order.remove(card_key)
+        if tile:
+            tile.setParent(None)
+            tile.deleteLater()
+        self._reflow_deck_grid()
+        self._sync_collection_badges_for_key(card_key)
+        self.actualizar_conteo()
+
+    def limpiar_editor(self):
+        for tile in list(self.deck_tiles.values()):
+            tile.setParent(None)
+            tile.deleteLater()
+        self.deck_tiles.clear()
+        self.deck_order.clear()
+        self._reflow_deck_grid()
+        self.lbl_mazo_nombre.setText(t("Selecciona un mazo"))
+        self.lbl_card_count.setText("0 / 60 cartas")
+
+    def cargar_cartas_de_mazo(self, mazo: Mazo):
+        self.limpiar_editor()
+        self.lbl_mazo_nombre.setText(mazo.nombre)
+        for mc in mazo.cartas:
+            data = {
+                "id_api": mc.id_api,
+                "nombre": mc.nombre_carta,
+                "idioma": mc.idioma,
+                "edition": mc.edition or ""
+            }
+            self.agregar_carta_tile(data, quantity=mc.cantidad)
+        self.actualizar_conteo()
+
+    def actualizar_conteo(self):
+        total = sum(w.get_quantity() for w in self.deck_tiles.values())
+        self.lbl_card_count.setText(f"{total} / 60 cartas")
+        self.editor_mini_box.set_deck_props(card_count=total)
+        if total == 60:
+            self.lbl_card_count.setStyleSheet("font-size: 13px; font-weight: 700; color: #15803d;")
+        else:
+            self.lbl_card_count.setStyleSheet("font-size: 13px; font-weight: 700; color: #b45309;")
+
+    # ── Estantería de Portamazos + Animaciones 3D de Apertura / Cierre ─────────
     def cargar_mazos(self):
-        """Renderiza la estantería de Portamazos 3D físicos del usuario."""
         self.session.expire_all()
         self._deck_box_widgets.clear()
         for i in reversed(range(self.decks_grid.count())):
@@ -611,8 +1355,7 @@ class MazosView(QWidget):
         bottom_row.setContentsMargins(2, 0, 2, 0)
         bottom_row.setSpacing(6)
 
-        status_txt = f"{total_qty} / 60"
-        lbl_cnt = QLabel(status_txt)
+        lbl_cnt = QLabel(f"{total_qty} / 60")
         cnt_c = "#15803d" if total_qty == 60 else "#703043"
         lbl_cnt.setStyleSheet(f"font-size: 11px; font-weight: 700; color: {cnt_c}; border: none; background: transparent;")
         bottom_row.addWidget(lbl_cnt)
@@ -676,7 +1419,7 @@ class MazosView(QWidget):
                 closing_id = self.mazo_actual.id
                 closing_name = self.mazo_actual.nombre
                 design, color = self._get_deck_style(closing_id)
-                total_qty = sum(w.get_quantity() for w in self.card_rows.values())
+                total_qty = sum(w.get_quantity() for w in self.deck_tiles.values())
 
                 editor_pix = self.deck_editor_widget.grab()
 
@@ -743,6 +1486,9 @@ class MazosView(QWidget):
         total_qty = sum(mc.cantidad for mc in mazo.cartas)
         self.editor_mini_box.set_deck_props(name=mazo.nombre, design=design, color=color, card_count=total_qty)
         self.cargar_cartas_de_mazo(mazo)
+        self._cargar_opciones_filtros_coleccion()
+        self.col_page = 0
+        self.cargar_coleccion_navegador()
         self.main_stack.setCurrentWidget(self.deck_editor_widget)
 
         if animaciones_activas:
@@ -834,174 +1580,21 @@ class MazosView(QWidget):
             self.cargar_mazos()
             show_toast("Mazo eliminado.", "info", 2000)
 
-    def limpiar_editor(self):
-        for widget in list(self.card_rows.values()):
-            self.cards_vbox.removeWidget(widget)
-            widget.deleteLater()
-        self.card_rows.clear()
-        self.lbl_mazo_nombre.setText(t("Selecciona un mazo"))
-        self.lbl_card_count.setText("0 / 60 cartas")
-
-    def cargar_cartas_de_mazo(self, mazo: Mazo):
-        self.limpiar_editor()
-        self.lbl_mazo_nombre.setText(mazo.nombre)
-        for mc in mazo.cartas:
-            data = {
-                "id_api": mc.id_api,
-                "nombre": mc.nombre_carta,
-                "idioma": mc.idioma,
-                "edition": mc.edition or ""
-            }
-            self.agregar_carta_row(data, quantity=mc.cantidad)
-        self.actualizar_conteo()
-
-    def agregar_carta_row(self, card_data, quantity=1):
-        card_key = f"{card_data.get('id_api')}:{card_data.get('idioma', 'es')}"
-        if card_key in self.card_rows:
-            widget = self.card_rows[card_key]
-            widget.spin_qty.setValue(widget.spin_qty.value() + quantity)
-        else:
-            widget = DeckCardRowWidget(card_data, quantity=quantity, parent=self)
-            widget.quantity_changed.connect(self.actualizar_conteo)
-            widget.removed.connect(self.remover_carta_row)
-            count = self.cards_vbox.count()
-            self.cards_vbox.insertWidget(max(0, count - 1), widget)
-            self.card_rows[card_key] = widget
-        self.actualizar_conteo()
-
-    def remover_carta_row(self, card_key):
-        if card_key in self.card_rows:
-            widget = self.card_rows.pop(card_key)
-            self.cards_vbox.removeWidget(widget)
-            widget.deleteLater()
-            self.actualizar_conteo()
-
-    def actualizar_conteo(self):
-        total = sum(w.get_quantity() for w in self.card_rows.values())
-        self.lbl_card_count.setText(f"{total} / 60 cartas")
-        self.editor_mini_box.set_deck_props(card_count=total)
-        if total == 60:
-            self.lbl_card_count.setStyleSheet("font-size: 13px; font-weight: 700; color: #15803d;")
-        else:
-            self.lbl_card_count.setStyleSheet("font-size: 13px; font-weight: 700; color: #b45309;")
-
-    def on_card_search_text_changed(self, text):
-        text = text.strip()
-        if len(text) < 2:
-            self.list_card_suggestions.hide()
-            return
-
-        from MyQtApp.models import UsuarioCarta
-
-        resultados = (
-            self.session.query(Cartas)
-            .join(UsuarioCarta, (Cartas.id_api == UsuarioCarta.carta_id) & (Cartas.idioma == UsuarioCarta.idioma))
-            .filter(UsuarioCarta.usuario_nombre == self.usuario)
-            .filter(Cartas.nombre.ilike(f"%{text}%"))
-            .limit(10)
-            .all()
-        )
-        if not resultados:
-            resultados = (
-                self.session.query(Cartas)
-                .join(UsuarioCarta, Cartas.id_api == UsuarioCarta.carta_id)
-                .filter(UsuarioCarta.usuario_nombre == self.usuario)
-                .filter(Cartas.nombre.ilike(f"%{text}%"))
-                .limit(10)
-                .all()
-            )
-
-        self.list_card_suggestions.clear()
-        if not resultados:
-            item = QListWidgetItem(t("No tienes esta carta en tu colección"))
-            item.setFlags(Qt.ItemFlag.NoItemFlags)
-            self.list_card_suggestions.addItem(item)
-            self.list_card_suggestions.show()
-            return
-
-        for c in resultados:
-            item_text = f"{c.nombre} ({c.edition or c.id_api}) [{c.idioma or 'es'}]"
-            item = QListWidgetItem(item_text)
-            item.setData(Qt.ItemDataRole.UserRole, {
-                "id_api": c.id_api,
-                "nombre": c.nombre,
-                "idioma": c.idioma or "es",
-                "edition": c.edition or ""
-            })
-            self.list_card_suggestions.addItem(item)
-        self.list_card_suggestions.show()
-
-    def on_suggestion_clicked(self, item):
-        data = item.data(Qt.ItemDataRole.UserRole)
-        if data and self.mazo_actual:
-            self.agregar_carta_row(data, quantity=1)
-        self.input_card_search.clear()
-        self.list_card_suggestions.hide()
-
-    def importar_mazo_texto(self):
-        if not self.mazo_actual:
-            QMessageBox.warning(self, t("Error"), "Debes seleccionar o crear un mazo primero.")
-            return
-
-        dialog = ImportDecklistDialog(self)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            texto = dialog.get_text()
-            if not texto:
-                return
-
-            from MyQtApp.models import UsuarioCarta
-            agregadas = 0
-            for linea in texto.splitlines():
-                linea = linea.strip()
-                if not linea or linea.startswith("#"):
-                    continue
-                match = re.match(r"^(\d+)\s+(.+)$", linea)
-                if match:
-                    qty = int(match.group(1))
-                    card_search = match.group(2).strip()
-                else:
-                    qty = 1
-                    card_search = linea
-
-                carta = (
-                    self.session.query(Cartas)
-                    .join(UsuarioCarta, (Cartas.id_api == UsuarioCarta.carta_id) & (Cartas.idioma == UsuarioCarta.idioma))
-                    .filter(UsuarioCarta.usuario_nombre == self.usuario)
-                    .filter(Cartas.nombre.ilike(f"%{card_search}%"))
-                    .first()
-                )
-                if not carta:
-                    carta = self.session.query(Cartas).filter(Cartas.nombre.ilike(f"%{card_search}%")).first()
-                if not carta:
-                    first_word = card_search.split()[0]
-                    carta = self.session.query(Cartas).filter(Cartas.nombre.ilike(f"%{first_word}%")).first()
-
-                if carta:
-                    self.agregar_carta_row({
-                        "id_api": carta.id_api,
-                        "nombre": carta.nombre,
-                        "idioma": carta.idioma or "es",
-                        "edition": carta.edition or ""
-                    }, quantity=qty)
-                    agregadas += qty
-
-            if agregadas > 0:
-                show_toast(f"Se importaron {agregadas} cartas al mazo.", "success", 2500)
-            else:
-                QMessageBox.warning(self, t("Importar desde Texto"), "No se encontraron coincidencias para la lista.")
-
     def guardar_mazo_actual(self):
         if not self.mazo_actual:
             return
         try:
             self.session.query(MazoCarta).filter(MazoCarta.mazo_id == self.mazo_actual.id).delete()
-            for widget in self.card_rows.values():
-                d = widget.card_data
+            for key in self.deck_order:
+                tile = self.deck_tiles.get(key)
+                if not tile:
+                    continue
+                d = tile.card_data
                 mc = MazoCarta(
                     mazo_id=self.mazo_actual.id,
                     id_api=d.get("id_api"),
                     nombre_carta=d.get("nombre"),
-                    cantidad=widget.get_quantity(),
+                    cantidad=tile.get_quantity(),
                     idioma=d.get("idioma", "es"),
                     edition=d.get("edition", "")
                 )

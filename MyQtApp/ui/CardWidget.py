@@ -2,14 +2,20 @@ import os
 from PyQt6.QtWidgets import (
     QWidget, QLabel, QVBoxLayout, QHBoxLayout, QPushButton,
     QGraphicsOpacityEffect, QGraphicsDropShadowEffect, QToolTip,
-    QDialog, QFrame, QScrollArea
+    QDialog, QFrame, QScrollArea, QMenu
 )
-from PyQt6.QtGui import QPixmap, QCursor, QColor, QPainter, QPainterPath, QTransform, QRadialGradient, QLinearGradient, QPen, QBrush
+from PyQt6.QtGui import (
+    QPixmap, QCursor, QColor, QPainter, QPainterPath, QTransform,
+    QRadialGradient, QLinearGradient, QPen, QBrush, QIcon, QAction
+)
 from PyQt6.QtCore import (
     Qt, pyqtSignal, QPropertyAnimation, QParallelAnimationGroup,
     QPoint, QPointF, QRect, QRectF, QEasingCurve, QTimer, QDateTime, pyqtProperty
 )
-from MyQtApp.config import ICONS_DIR, IMAGES_DIR, EXE_DIR, VARIANT_COLOR_MAP, normalize_lang_code
+from MyQtApp.config import (
+    ICONS_DIR, IMAGES_DIR, EXE_DIR, VARIANT_COLOR_MAP,
+    normalize_lang_code, normalize_variant_name
+)
 from MyQtApp.i18n import t, language_manager
 from MyQtApp.app.getImgs import (
     get_pixmap_from_zip, get_webp_pixmap, get_hd_pixmap,
@@ -51,26 +57,40 @@ class LanguageBadgeLabel(QLabel):
         self.adjustSize()
 
 
+def _create_variant_swatch_icon(color_hex: str, border_hex: str) -> QIcon:
+    """Crea un ícono cuadrado redondeado con el color de la variante para el menú desplegable."""
+    pix = QPixmap(14, 14)
+    pix.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pix)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setBrush(QColor(color_hex))
+    painter.setPen(QPen(QColor(border_hex), 1.5))
+    painter.drawRoundedRect(1, 1, 12, 12, 3, 3)
+    painter.end()
+    return QIcon(pix)
+
+
 class VariantBadgeButton(QPushButton):
 
-    """Boton/Badge rectangular vertical distintivo para cambiar o mostrar la variante de la carta."""
+    """Botón/Badge rectangular vertical con menú desplegable para seleccionar la variante de la carta."""
     variant_changed = pyqtSignal(str, str)  # (id_api, nueva_variante)
 
     def __init__(self, id_api, variante_actual="Normal", parent=None):
         super().__init__(parent)
         self.id_api = id_api
-        self.variante_actual = variante_actual or "Normal"
+        self.variante_actual = normalize_variant_name(variante_actual)
         self.setFixedSize(14, 38)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.update_appearance()
-        self.clicked.connect(self.cycle_variant)
+        self.clicked.connect(self.open_variant_menu)
 
     def update_appearance(self):
+        self.variante_actual = normalize_variant_name(self.variante_actual)
         info = VARIANT_COLOR_MAP.get(self.variante_actual, VARIANT_COLOR_MAP["Normal"])
         color = info["color"]
         border = info["border"]
         name = info["name"]
-        self.setToolTip(f"Variante: {name}\n(Haz clic para cambiar variante)")
+        self.setToolTip(f"Variante: {name}\n(Haz clic para elegir variante)")
         self.setStyleSheet(f"""
             QPushButton {{
                 background-color: {color};
@@ -83,27 +103,62 @@ class VariantBadgeButton(QPushButton):
         """)
 
     def set_variante(self, variante: str):
-        self.variante_actual = variante or "Normal"
+        self.variante_actual = normalize_variant_name(variante)
         self.update_appearance()
 
-    def cycle_variant(self):
-        variantes = list(VARIANT_COLOR_MAP.keys())
-        idx = variantes.index(self.variante_actual) if self.variante_actual in variantes else 4
-        proxima = variantes[(idx + 1) % len(variantes)]
-        self.variante_actual = proxima
+    def open_variant_menu(self):
+        menu = QMenu(self)
+        menu.setStyleSheet("""
+            QMenu {
+                background-color: #0f172a;
+                color: #f8fafc;
+                border: 1.5px solid #f29ca4;
+                border-radius: 8px;
+                padding: 4px;
+                font-size: 12px;
+            }
+            QMenu::item {
+                padding: 5px 18px 5px 8px;
+                border-radius: 5px;
+                color: #f8fafc;
+            }
+            QMenu::item:selected {
+                background-color: #e25b70;
+                color: #ffffff;
+            }
+            QMenu::item:checked {
+                font-weight: bold;
+                background-color: rgba(242, 156, 164, 0.25);
+            }
+        """)
+        for key, info in VARIANT_COLOR_MAP.items():
+            icon = _create_variant_swatch_icon(info["color"], info["border"])
+            act = QAction(icon, info["name"], menu)
+            act.setCheckable(True)
+            act.setChecked(key == self.variante_actual)
+            act.triggered.connect(lambda checked=False, v=key: self._select_variant(v))
+            menu.addAction(act)
+
+        menu.exec(self.mapToGlobal(QPoint(0, self.height() + 2)))
+
+    def _select_variant(self, nueva_variante: str):
+        nueva_variante = normalize_variant_name(nueva_variante)
+        if nueva_variante == self.variante_actual:
+            return
+        self.variante_actual = nueva_variante
         self.update_appearance()
-        self.variant_changed.emit(self.id_api, proxima)
+        self.variant_changed.emit(self.id_api, nueva_variante)
 
 
 class VariantLegendBar(QWidget):
-    """Barra horizontal explicativa de la leyenda de colores de variaciones."""
+    """Barra horizontal explicativa de los colores de Variantes."""
     def __init__(self, parent=None):
         super().__init__(parent)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(10, 4, 10, 4)
-        layout.setSpacing(14)
+        layout.setSpacing(12)
 
-        lbl_title = QLabel("🎨 Leyenda de Variantes:", self)
+        lbl_title = QLabel("Variantes:", self)
         lbl_title.setStyleSheet("font-weight: bold; font-size: 11px; color: #38bdf8;")
         layout.addWidget(lbl_title)
 

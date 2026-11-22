@@ -404,6 +404,24 @@ class PrintView(QWidget):
         self.btn_generate_pdf.clicked.connect(self.generar_pdf)
         left_layout.addWidget(self.btn_generate_pdf)
 
+        self.btn_export_csv = QPushButton(_plain_label(t("Exportar CSV")), self)
+        self.btn_export_csv.setFixedSize(340, 38)
+        self.btn_export_csv.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_export_csv.setStyleSheet("""
+            QPushButton {
+                background-color: #0284c7;
+                color: #ffffff;
+                font-size: 13px;
+                font-weight: bold;
+                border-radius: 8px;
+            }
+            QPushButton:hover {
+                background-color: #0369a1;
+            }
+        """)
+        self.btn_export_csv.clicked.connect(self.exportar_cola_csv)
+        left_layout.addWidget(self.btn_export_csv)
+
         btn_clear = QPushButton(_plain_label(t("Limpiar Cola")), self)
         btn_clear.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_clear.setStyleSheet("""
@@ -836,3 +854,56 @@ class PrintView(QWidget):
 
         except Exception as e:
             QMessageBox.critical(self, "Error generando PDF", f"Ocurrió un error al crear el archivo PDF:\n{str(e)}")
+
+    def cargar_binder_automatico(self, binder_id: str):
+        """Selecciona automáticamente un Binder y carga sus cartas en la cola de impresión/exportación."""
+        self.limpiar_cola()
+        idx_tipo = self.combo_origen_tipo.findData("binder")
+        if idx_tipo >= 0:
+            self.combo_origen_tipo.blockSignals(True)
+            self.combo_origen_tipo.setCurrentIndex(idx_tipo)
+            self.combo_origen_tipo.blockSignals(False)
+        self.refrescar_items_origen()
+
+        idx_item = self.combo_origen_item.findData(binder_id)
+        if idx_item >= 0:
+            self.combo_origen_item.setCurrentIndex(idx_item)
+            self.cargar_origen_seleccionado_a_cola()
+        else:
+            show_toast("No se encontró el binder para cargar en Print.", "warning", 2500)
+
+    def exportar_cola_csv(self):
+        """Exporta las cartas actualmente en la cola de Print a un archivo CSV."""
+        if not self.print_queue:
+            show_toast("La cola está vacía. Agrega cartas antes de exportar CSV.", "warning", 2500)
+            return
+
+        import csv
+        default_name = "PokeBinder_Export.csv"
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            t("Exportar CSV"),
+            default_name,
+            "Archivos CSV (*.csv)"
+        )
+        if not file_path:
+            return
+        if not file_path.lower().endswith(".csv"):
+            file_path += ".csv"
+
+        try:
+            with open(file_path, "w", newline="", encoding="utf-8-sig") as f:
+                writer = csv.writer(f)
+                writer.writerow(["ID", "Nombre", "Idioma", "Edicion", "Cantidad"])
+                for item in self.print_queue:
+                    cd = item["card_data"]
+                    writer.writerow([
+                        cd.get("id_api", ""),
+                        cd.get("nombre", ""),
+                        cd.get("idioma", "es"),
+                        cd.get("edition", ""),
+                        item.get("quantity", 1),
+                    ])
+            show_toast("Archivo CSV exportado con éxito.", "success", 3000)
+        except Exception as e:
+            QMessageBox.critical(self, "Error exportando CSV", f"No se pudo guardar el archivo CSV:\n{str(e)}")

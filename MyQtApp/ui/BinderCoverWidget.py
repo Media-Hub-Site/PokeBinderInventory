@@ -6,7 +6,12 @@ from PyQt6.QtGui import (
     QPen, QBrush, QFont, QPixmap, QFontMetrics
 )
 
-from MyQtApp.config import BUNDLE_DIR, EXE_DIR, PERFIL_DIR, PROJECT_ROOT, load_settings, scale_anim_duration
+from MyQtApp.config import (
+    BUNDLE_DIR, EXE_DIR, PERFIL_DIR, PROJECT_ROOT, USER_DATA_DIR,
+    load_settings, scale_anim_duration
+)
+
+BINDER_COVERS_DIR = os.path.join(USER_DATA_DIR, "binder_covers")
 
 
 # Temas físicos de Binder estilo Ultra PRO Pokémon Portfolio (sin emojis)
@@ -18,6 +23,7 @@ BINDER_DESIGNS = {
         "strap": "#b91c1c",
         "spine": "#110f17",
         "text": "#ffffff",
+        "interior": "#1c1922",
         "artwork": "charizard.webp",
         "kind": "artwork",
     },
@@ -28,6 +34,7 @@ BINDER_DESIGNS = {
         "strap": "#0369a1",
         "spine": "#08192b",
         "text": "#ffffff",
+        "interior": "#0e1e30",
         "artwork": "blastoise.webp",
         "kind": "artwork",
     },
@@ -38,6 +45,7 @@ BINDER_DESIGNS = {
         "strap": "#ca8a04",
         "spine": "#1a160d",
         "text": "#ffffff",
+        "interior": "#221e14",
         "artwork": "pikachu.webp",
         "kind": "artwork",
     },
@@ -48,6 +56,7 @@ BINDER_DESIGNS = {
         "strap": "#27272a",
         "spine": "#09090b",
         "text": "#f8fafc",
+        "interior": "#141418",
         "artwork": "umbreon.webp",
         "kind": "artwork",
     },
@@ -58,6 +67,7 @@ BINDER_DESIGNS = {
         "strap": "#ec407a",
         "spine": "#c2185b",
         "text": "#ffffff",
+        "interior": "#36202a",
         "artwork": "sylveon.webp",
         "kind": "artwork",
     },
@@ -68,6 +78,7 @@ BINDER_DESIGNS = {
         "strap": "#083344",
         "spine": "#0b2c38",
         "text": "#ffffff",
+        "interior": "#122933",
         "artwork": "snorlax.webp",
         "kind": "artwork",
     },
@@ -78,6 +89,7 @@ BINDER_DESIGNS = {
         "strap": "#18181b",
         "spine": "#991b1b",
         "text": "#ffffff",
+        "interior": "#1e1719",
         "artwork": None,
         "kind": "pokeball",
     },
@@ -88,6 +100,7 @@ BINDER_DESIGNS = {
         "strap": "#3b0764",
         "spine": "#2e1065",
         "text": "#ffffff",
+        "interior": "#1f122d",
         "artwork": None,
         "kind": "masterball",
     },
@@ -98,6 +111,7 @@ BINDER_DESIGNS = {
         "strap": "#18181b",
         "spine": "#18181b",
         "text": "#ffffff",
+        "interior": "#18181e",
         "artwork": None,
         "kind": "minimal",
     },
@@ -144,12 +158,33 @@ def resolve_design_key(design_name: str) -> str:
     return LEGACY_DESIGN_MAP.get(design_name, "Charizard Fuego")
 
 
+def get_design_default_interior_color(design_name: str) -> str:
+    cfg = BINDER_DESIGNS.get(resolve_design_key(design_name), BINDER_DESIGNS["Charizard Fuego"])
+    return cfg.get("interior", "#18181e")
+
+
+def resolve_custom_cover_pixmap(image_path: str | None) -> QPixmap | None:
+    """Carga una imagen personalizada de portada (ruta absoluta o relativa en binder_covers)."""
+    if not image_path:
+        return None
+    candidates = [image_path]
+    if not os.path.isabs(image_path):
+        candidates.append(os.path.join(BINDER_COVERS_DIR, image_path))
+        candidates.append(os.path.join(USER_DATA_DIR, image_path))
+    for path in candidates:
+        if path and os.path.exists(path):
+            pix = QPixmap(path)
+            if not pix.isNull():
+                return pix
+    return None
+
+
 class BinderCoverWidget(QWidget):
     """
     Renderiza una portada física realista de Binder/Portfolio estilo Ultra PRO Pokémon TCG:
     - Hojas apiladas visibles en el borde derecho (profundidad 3D)
     - Lomo izquierdo con costura y pliegue de apertura
-    - Ilustración Pokémon o emblema vectorial (Pokéball / Master Ball / Minimalista)
+    - Ilustración Pokémon, imagen personalizada (con soporte PNG transparente) o emblema vectorial
     - Banda elástica vertical de cierre en el costado derecho
     - Placa inferior con nombre del binder y formato de bolsillos (3x3, 2x2, etc.)
     """
@@ -160,6 +195,8 @@ class BinderCoverWidget(QWidget):
         design: str = "Charizard Fuego",
         color: str = None,
         mode: str = "3x3",
+        custom_image: str = None,
+        locked: bool = False,
         parent=None,
     ):
         super().__init__(parent)
@@ -167,13 +204,24 @@ class BinderCoverWidget(QWidget):
         self._design = resolve_design_key(design)
         self._custom_color = color
         self._mode = mode or "3x3"
+        self._custom_image = custom_image or None
+        self._custom_pixmap = resolve_custom_cover_pixmap(self._custom_image)
+        self._locked = bool(locked)
         self._hovered = False
         self._hover_progress = 0.0
         self._hover_anim = None
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setMinimumSize(150, 195)
 
-    def set_binder_props(self, name: str = None, design: str = None, color: str = None, mode: str = None):
+    def set_binder_props(
+        self,
+        name: str = None,
+        design: str = None,
+        color: str = None,
+        mode: str = None,
+        custom_image="UNSET",
+        locked: bool = None,
+    ):
         if name is not None:
             self._name = name or "Mi Binder"
         if design is not None:
@@ -182,6 +230,11 @@ class BinderCoverWidget(QWidget):
             self._custom_color = color
         if mode is not None:
             self._mode = mode
+        if custom_image != "UNSET":
+            self._custom_image = custom_image or None
+            self._custom_pixmap = resolve_custom_cover_pixmap(self._custom_image)
+        if locked is not None:
+            self._locked = bool(locked)
         self.update()
 
     def set_hovered(self, hovered: bool):
@@ -319,7 +372,19 @@ class BinderCoverWidget(QWidget):
         art_center = QPointF(art_area_x + art_area_w / 2.0, art_area_y + art_area_h / 2.0)
 
         kind = cfg.get("kind", "artwork")
-        if kind == "pokeball":
+        if self._custom_pixmap and not self._custom_pixmap.isNull():
+            # Imagen personalizada dibujada encima del color base completo (respeta transparencias PNG)
+            target_rect = QRectF(art_area_x - 2.0, art_area_y - 2.0, art_area_w + 4.0, art_area_h + 6.0)
+            scaled = self._custom_pixmap.scaled(
+                int(max(16, target_rect.width())),
+                int(max(16, target_rect.height())),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            px = target_rect.center().x() - scaled.width() / 2.0
+            py = target_rect.center().y() - scaled.height() / 2.0
+            painter.drawPixmap(QPointF(px, py), scaled)
+        elif kind == "pokeball":
             self._draw_pokeball_cover(painter, cover_x + spine_w, cover_y, cover_w - spine_w, cover_h, art_center, min(art_area_w, art_area_h) * 0.44)
         elif kind == "masterball":
             self._draw_masterball_cover(painter, art_center, min(art_area_w, art_area_h) * 0.44)
@@ -391,6 +456,23 @@ class BinderCoverWidget(QWidget):
         painter.setPen(QPen(QColor(255, 255, 255, 35), 0.8))
         painter.drawLine(QPointF(strap_x + 2.0, cover_y), QPointF(strap_x + 2.0, cover_y + cover_h))
         painter.drawLine(QPointF(strap_x + strap_w - 2.0, cover_y), QPointF(strap_x + strap_w - 2.0, cover_y + cover_h))
+
+        # 7b. Indicador vectorial discreto de bloqueo si el binder está bloqueado
+        if self._locked:
+            badge_s = 22.0
+            bx = strap_x - badge_s - 6.0
+            by = cover_y + 8.0
+            painter.setPen(QPen(QColor(255, 255, 255, 190), 1.2))
+            painter.setBrush(QColor(15, 23, 42, 200))
+            painter.drawRoundedRect(QRectF(bx, by, badge_s, badge_s), 6, 6)
+            # Arco del candado
+            painter.setPen(QPen(QColor("#fbbf24"), 1.7))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawArc(QRectF(bx + 6.5, by + 4.0, 9.0, 9.0), 0, 180 * 16)
+            # Cuerpo del candado
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor("#fbbf24"))
+            painter.drawRoundedRect(QRectF(bx + 5.0, by + 9.5, 12.0, 8.5), 2, 2)
 
         painter.restore()
 

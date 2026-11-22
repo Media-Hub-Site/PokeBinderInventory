@@ -659,7 +659,10 @@ class PageFlipAnimationOverlay(QWidget):
         draw_binder_rings(painter, spine_x, inner_board.top() + 14, inner_board.bottom() - 14, ring_count=3)
 
 
-def render_transparent_cover_pixmap(name: str, design: str, color: str, mode: str, width: int, height: int) -> QPixmap:
+def render_transparent_cover_pixmap(
+    name: str, design: str, color: str, mode: str, width: int, height: int,
+    custom_image: str = None, locked: bool = False
+) -> QPixmap:
     """Renderiza la portada física BinderCoverWidget sobre un QPixmap transparente (sin bordes blancos)."""
     from MyQtApp.ui.BinderCoverWidget import BinderCoverWidget
 
@@ -668,7 +671,10 @@ def render_transparent_cover_pixmap(name: str, design: str, color: str, mode: st
     pix = QPixmap(w, h)
     pix.fill(Qt.GlobalColor.transparent)
 
-    temp = BinderCoverWidget(name=name, design=design, color=color, mode=mode)
+    temp = BinderCoverWidget(
+        name=name, design=design, color=color, mode=mode,
+        custom_image=custom_image, locked=locked
+    )
     temp.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
     temp.resize(w, h)
     # RenderFlag(0) omite el fondo opaco de ventana y dibuja únicamente paintEvent sobre el fondo transparente
@@ -977,22 +983,28 @@ class CardSlideInOverlay(QWidget):
     """
     animation_finished = pyqtSignal()
 
-    def __init__(self, slot_widget: QWidget, card_pixmap: QPixmap):
+    def __init__(self, slot_widget: QWidget, card_pixmap: QPixmap, reverse: bool = False):
         super().__init__(slot_widget)
         self.setGeometry(slot_widget.rect())
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.card_pixmap = card_pixmap
-        self._progress = 0.0
+        self.reverse = bool(reverse)
+        self._progress = 1.0 if self.reverse else 0.0
         self._sfx = play_sleeve_insert_sound(self)
 
         self.show()
         self.raise_()
 
         self._anim = QVariantAnimation(self)
-        self._anim.setDuration(scale_anim_duration(220, min_ms=100))
-        self._anim.setStartValue(0.0)
-        self._anim.setEndValue(1.0)
-        self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._anim.setDuration(scale_anim_duration(230, min_ms=100))
+        if self.reverse:
+            self._anim.setStartValue(1.0)
+            self._anim.setEndValue(0.0)
+            self._anim.setEasingCurve(QEasingCurve.Type.InCubic)
+        else:
+            self._anim.setStartValue(0.0)
+            self._anim.setEndValue(1.0)
+            self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
         self._anim.valueChanged.connect(self._on_tick)
         self._anim.finished.connect(self._on_done)
         self._anim.start()
@@ -1013,7 +1025,7 @@ class CardSlideInOverlay(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
 
-        # Clip al interior del bolsillo redondeado para que la carta aparezca desde la ranura superior
+        # Clip al interior del bolsillo redondeado para que la carta entre o salga desde la ranura superior
         clip_path = QPainterPath()
         clip_path.addRoundedRect(QRectF(self.rect()).adjusted(1.5, 1.5, -1.5, -1.5), 6.0, 6.0)
         painter.setClipPath(clip_path)
@@ -1024,16 +1036,20 @@ class CardSlideInOverlay(QWidget):
         target_x = (self.width() - pw) * 0.5
         target_y = (self.height() - ph) * 0.5
 
-        # Deslizar desde arriba (-48% de la altura) hasta su posición centrada
-        start_y = target_y - ph * 0.48
+        # Deslizar desde arriba (-48% de la altura) hasta su posición centrada (o viceversa si reverse=True)
+        offset_factor = 0.58 if self.reverse else 0.48
+        start_y = target_y - ph * offset_factor
         cur_y = start_y + (target_y - start_y) * t
 
-        # Sutil fondo oscuro del bolsillo detrás mientras desliza
-        painter.fillRect(self.rect(), QColor(22, 22, 28, 220))
+        # Sutil fondo oscuro del bolsillo detrás mientras desliza (se atenúa al salir)
+        bg_alpha = int(190 * t) if self.reverse else 220
+        if bg_alpha > 4:
+            painter.fillRect(self.rect(), QColor(22, 22, 28, bg_alpha))
 
         # Carta deslizándose
         painter.save()
-        painter.setOpacity(0.45 + 0.55 * t)
+        card_opacity = max(0.0, min(1.0, t if self.reverse else (0.45 + 0.55 * t)))
+        painter.setOpacity(card_opacity)
         painter.drawPixmap(QPointF(target_x, cur_y), self.card_pixmap)
         painter.restore()
 

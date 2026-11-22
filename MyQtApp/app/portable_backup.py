@@ -105,6 +105,18 @@ def export_user_backup_zip(usuario: str, zip_path: str) -> dict:
             zf.writestr("user_binders.json", json.dumps(user_binders, indent=2, ensure_ascii=False))
             zf.writestr("user_settings.json", json.dumps(settings_data, indent=2, ensure_ascii=False))
 
+            # Incluir imágenes personalizadas de portadas de binders si existen
+            covers_dir = os.path.join(USER_DATA_DIR, "binder_covers")
+            if os.path.isdir(covers_dir) and isinstance(user_binders, dict):
+                referenced = set()
+                for f_data in user_binders.get("folders", {}).values():
+                    if isinstance(f_data, dict) and f_data.get("custom_image"):
+                        referenced.add(os.path.basename(str(f_data["custom_image"])))
+                for fname in referenced:
+                    fpath = os.path.join(covers_dir, fname)
+                    if os.path.isfile(fpath):
+                        zf.write(fpath, arcname=f"binder_covers/{fname}")
+
         return manifest["counts"]
     finally:
         session.close()
@@ -132,6 +144,16 @@ def import_user_backup_zip(target_usuario: str, zip_path: str) -> dict:
         decks_payload = json.loads(zf.read("user_decks.json").decode("utf-8")) if "user_decks.json" in names else {}
         binders_payload = json.loads(zf.read("user_binders.json").decode("utf-8")) if "user_binders.json" in names else {}
         settings_payload = json.loads(zf.read("user_settings.json").decode("utf-8")) if "user_settings.json" in names else None
+
+        # Restaurar imágenes personalizadas de portadas de binders si vienen en el ZIP
+        covers_dir = os.path.join(USER_DATA_DIR, "binder_covers")
+        for member in names:
+            if member.startswith("binder_covers/") and not member.endswith("/"):
+                fname = os.path.basename(member)
+                if fname:
+                    os.makedirs(covers_dir, exist_ok=True)
+                    with open(os.path.join(covers_dir, fname), "wb") as out_f:
+                        out_f.write(zf.read(member))
 
     session = SessionLocal()
     try:

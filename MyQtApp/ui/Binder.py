@@ -1,12 +1,14 @@
+import copy
 import json
 import os
+import shutil
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QScrollArea, 
     QGridLayout, QFrame, QPushButton, QApplication, QSizePolicy,
     QStackedWidget, QGraphicsOpacityEffect, QLineEdit, QComboBox,
-    QDialog, QMessageBox, QColorDialog
+    QDialog, QMessageBox, QColorDialog, QMenu, QFileDialog, QTabWidget
 )
-from PyQt6.QtCore import Qt, QMimeData, QPoint, QPointF, QSize, QEasingCurve, QPropertyAnimation, QRect, QRectF, QTimer
+from PyQt6.QtCore import Qt, QMimeData, QPoint, QPointF, QSize, QEasingCurve, QPropertyAnimation, QRect, QRectF, QTimer, pyqtSignal
 from PyQt6.QtGui import QDrag, QPixmap, QCursor, QAction, QPainter, QLinearGradient, QColor, QPen, QShortcut, QKeySequence
 from sqlalchemy import func
 
@@ -21,7 +23,10 @@ from ..app.price_updater import (
 )
 from MyQtApp.i18n import t, language_manager
 from MyQtApp.ui.CardWidget import CardZoomOverlay, VariantBadgeButton, LanguageBadgeLabel, InfoIconLabel
-from MyQtApp.ui.BinderCoverWidget import BinderCoverWidget, BINDER_DESIGNS, resolve_design_key
+from MyQtApp.ui.BinderCoverWidget import (
+    BinderCoverWidget, BINDER_DESIGNS, resolve_design_key,
+    BINDER_COVERS_DIR, get_design_default_interior_color
+)
 from MyQtApp.ui.BinderBookAnimations import (
     BinderSpreadFrame,
     PageFlipAnimationOverlay,
@@ -345,7 +350,16 @@ class BinderSlot(QLabel):
         if self.binder_view and hasattr(self.binder_view, 'update_slot_variant'):
             self.binder_view.update_slot_variant(self.page_index, self.slot_index, nueva_variante)
 
-    def clear_card(self):
+    def clear_card(self, animate_remove: bool = False):
+        old_pix = None
+        if animate_remove:
+            try:
+                from MyQtApp.config import load_settings
+                if load_settings().get("animaciones", True) and self.pixmap() and not self.pixmap().isNull():
+                    old_pix = self.pixmap().copy()
+            except Exception:
+                old_pix = None
+
         self.id_api = None
         self.nombre_archivo = None
         self.idioma = None
@@ -360,6 +374,12 @@ class BinderSlot(QLabel):
             self.lang_badge.hide()
         self.clear()
         self.update_style()
+
+        if old_pix is not None and not old_pix.isNull():
+            try:
+                self._slide_out_overlay = CardSlideInOverlay(self, old_pix, reverse=True)
+            except Exception as e:
+                print(f"Error en animación de salida de carta: {e}")
 
 
     def dragEnterEvent(self, event):
@@ -433,9 +453,12 @@ class BinderSlot(QLabel):
 
 
 class InventorySidebar(QWidget):
+    card_removed_from_binder = pyqtSignal(str)  # emits source_slot (e.g. "0_3")
+
     def __init__(self, usuario, parent=None):
         super().__init__(parent)
         self.usuario = usuario
+        self.setAcceptDrops(True)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
@@ -448,6 +471,24 @@ class InventorySidebar(QWidget):
             " border: none; background: transparent;"
         )
         layout.addWidget(self.header)
+
+        # Banner de zona de soltado para devolver cartas desde el binder (Issue #23)
+        self.drop_remove_banner = QLabel(t("Suelta aquí para quitar del binder"))
+        self.drop_remove_banner.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.drop_remove_banner.setWordWrap(True)
+        self.drop_remove_banner.setStyleSheet("""
+            QLabel {
+                background-color: #fee2e2;
+                color: #b91c1c;
+                border: 2px dashed #ef4444;
+                border-radius: 10px;
+                padding: 8px 6px;
+                font-size: 11px;
+                font-weight: 700;
+            }
+        """)
+        self.drop_remove_banner.hide()
+        layout.addWidget(self.drop_remove_banner)
 
         # 1. Buscador (usa clase SearchInput del QSS global)
         self.buscador = QLineEdit()
@@ -730,15 +771,50 @@ class InventorySidebar(QWidget):
         self.cargar_opciones_filtros()
         self.load_cards()
 
+    def _is_binder_drag(self, event) -> bool:
+        try:
+            md = event.mimeData()
+            return bool(md and md.hasText() and md.property("source") == "binder" and md.property("source_slot"))
+        except Exception:
+            return False
+
+    def dragEnterEvent(self, event):
+        if self._is_binder_drag(event):
+            self.drop_remove_banner.show()
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        if self._is_binder_drag(event):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragLeaveEvent(self, event):
+        self.drop_remove_banner.hide()
+        super().dragLeaveEvent(event)
+
+    def dropEvent(self, event):
+        self.drop_remove_banner.hide()
+        if self._is_binder_drag(event):
+            source_slot = event.mimeData().property("source_slot")
+            if source_slot:
+                self.card_removed_from_binder.emit(str(source_slot))
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
 
 class BinderPage(QWidget):
-    def __init__(self, page_index, binder_view, rows, cols, slot_w, slot_h, card_w, card_h, is_left=True, parent=None):
+    def __init__(self, page_index, binder_view, rows, cols, slot_w, slot_h, card_w, card_h, is_left=True, interior_color=None, parent=None):
         super().__init__(parent)
         self.page_index = page_index
         self.binder_view = binder_view
         self.rows = rows
         self.cols = cols
         self.is_left = is_left
+        self.interior_color = interior_color or "#18181e"
 
         layout = QGridLayout(self)
         layout.setSpacing(10)
@@ -765,17 +841,32 @@ class BinderPage(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         rect = QRectF(self.rect()).adjusted(1, 1, -1, -1)
 
-        # Base de hoja de polipropileno oscuro mate estilo Ultra PRO
+        # Base de hoja personalizable estilo Ultra PRO (negro mate por defecto o color elegido)
+        base_col = QColor(self.interior_color)
+        if not base_col.isValid():
+            base_col = QColor(24, 24, 30)
+        c_top = base_col.lighter(120)
+        c_top.setAlpha(242)
+        c_mid = QColor(base_col)
+        c_mid.setAlpha(246)
+        c_bot = base_col.darker(122)
+        c_bot.setAlpha(250)
+
+        # Determinar contraste de costuras según luminosidad del color interior
+        luma = 0.299 * base_col.red() + 0.587 * base_col.green() + 0.114 * base_col.blue()
+        seam_col = QColor(20, 20, 30, 50) if luma > 155 else QColor(255, 255, 255, 26)
+        border_col = QColor(20, 20, 30, 70) if luma > 155 else QColor(255, 255, 255, 40)
+
         sheet_grad = QLinearGradient(rect.left(), rect.top(), rect.right(), rect.bottom())
-        sheet_grad.setColorAt(0.0, QColor(34, 34, 42, 240))
-        sheet_grad.setColorAt(0.5, QColor(24, 24, 30, 245))
-        sheet_grad.setColorAt(1.0, QColor(18, 18, 24, 248))
+        sheet_grad.setColorAt(0.0, c_top)
+        sheet_grad.setColorAt(0.5, c_mid)
+        sheet_grad.setColorAt(1.0, c_bot)
         painter.setBrush(sheet_grad)
-        painter.setPen(QPen(QColor(255, 255, 255, 36), 1.2))
+        painter.setPen(QPen(border_col, 1.2))
         painter.drawRoundedRect(rect, 7, 7)
 
         # Costuras termoselladas sutiles entre los bolsillos
-        seam_pen = QPen(QColor(255, 255, 255, 22), 1.0, Qt.PenStyle.DotLine)
+        seam_pen = QPen(seam_col, 1.0, Qt.PenStyle.DotLine)
         painter.setPen(seam_pen)
         if self.cols > 1:
             for c in range(1, self.cols):
@@ -814,6 +905,8 @@ class BinderPage(QWidget):
 
 
 class BinderView(QWidget):
+    open_binder_in_print_requested = pyqtSignal(str, str)  # (folder_id, mode: "print" | "csv")
+
     def __init__(self, usuario, parent=None):
         super().__init__(parent)
         self.usuario = usuario
@@ -844,6 +937,7 @@ class BinderView(QWidget):
         left_layout = QVBoxLayout(left_container)
         
         self.inventory = InventorySidebar(usuario)
+        self.inventory.card_removed_from_binder.connect(self.quitar_carta_arrastrada)
         left_layout.addWidget(self.inventory)
         
         main_layout.addWidget(left_container)
@@ -976,6 +1070,14 @@ class BinderView(QWidget):
         self.btn_manage_folders.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_manage_folders.clicked.connect(self.abrir_dialogo_administrar_carpetas)
         header_layout.addWidget(self.btn_manage_folders)
+
+        self.btn_edit_current_folder = QPushButton(t("Editar"))
+        self.btn_edit_current_folder.setFixedHeight(30)
+        self.btn_edit_current_folder.setProperty("class", "pill")
+        self.btn_edit_current_folder.setToolTip(t("Editar portada, imagen, colores y opciones del binder actual"))
+        self.btn_edit_current_folder.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_edit_current_folder.clicked.connect(self.editar_carpeta_actual)
+        header_layout.addWidget(self.btn_edit_current_folder)
 
         header_layout.addStretch()
 
@@ -1258,9 +1360,13 @@ class BinderView(QWidget):
                         current_spread.setVisible(True)
 
                         name, design, color, mode = self._get_current_folder_theme()
+                        custom_image, _interior, locked = self._get_current_folder_extra()
                         cover_w = max(140, int(board_local.width() * 0.5))
                         cover_h = max(180, int(board_local.height()))
-                        cover_pix = render_transparent_cover_pixmap(name, design, color, mode, cover_w, cover_h)
+                        cover_pix = render_transparent_cover_pixmap(
+                            name, design, color, mode, cover_w, cover_h,
+                            custom_image=custom_image, locked=locked
+                        )
 
                         # Cambiar a la estantería y calcular el destino exacto de la carpeta
                         self.render_folders_grid()
@@ -1324,6 +1430,16 @@ class BinderView(QWidget):
         color = folder.get("color", "auto")
         mode = folder.get("mode", self.current_mode)
         return name, design, color, mode
+
+    def _get_current_folder_extra(self) -> tuple[str | None, str, bool]:
+        """Retorna (custom_image, interior_color, locked) de la carpeta actual."""
+        folders = self.get_user_folders()
+        folder = folders.get(self.current_folder_id, {})
+        design = resolve_design_key(folder.get("design", "Charizard Fuego"))
+        custom_image = folder.get("custom_image") or None
+        interior_color = folder.get("interior_color") or get_design_default_interior_color(design)
+        locked = bool(folder.get("locked", False))
+        return custom_image, interior_color, locked
 
     def abrir_carpeta(self, folder_id, origin_widget=None):
         """Abre la carpeta seleccionada con animación 3D de apertura de libro/binder."""
@@ -1396,9 +1512,13 @@ class BinderView(QWidget):
 
             # Renderizar portada física transparente (sin esquinas blancas)
             name, design, color, mode = self._get_current_folder_theme()
+            custom_image, _interior, locked = self._get_current_folder_extra()
             cover_w = max(140, int(board_local.width() * 0.5))
             cover_h = max(180, int(board_local.height()))
-            cover_pix = render_transparent_cover_pixmap(name, design, color, mode, cover_w, cover_h)
+            cover_pix = render_transparent_cover_pixmap(
+                name, design, color, mode, cover_w, cover_h,
+                custom_image=custom_image, locked=locked
+            )
 
             # Mapear el rectángulo del binder a coordenadas de self.main_stack
             top_left_stack = current_spread.mapTo(self.main_stack, board_local.topLeft().toPoint())
@@ -1677,11 +1797,13 @@ class BinderView(QWidget):
                 row += 1
 
     def _crear_tarjeta_carpeta(self, f_id, f_data):
-        """Crea la tarjeta visual de un Binder con portada física realista Ultra PRO (sin emojis)."""
+        """Crea la tarjeta visual de un Binder con portada física realista Ultra PRO y menú '...' (sin emojis)."""
         name = f_data.get("name", "Carpeta")
         color = f_data.get("color", "auto")
         design = resolve_design_key(f_data.get("design", "Charizard Fuego"))
         mode = f_data.get("mode", "3x3")
+        custom_image = f_data.get("custom_image") or None
+        locked = bool(f_data.get("locked", False))
 
         cards_dict = f_data.get("cards", {}).get(mode, {})
         cant_cartas = len(cards_dict)
@@ -1705,13 +1827,21 @@ class BinderView(QWidget):
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(6)
 
-        # Portada física realista del Binder (Issue #13)
-        cover = BinderCoverWidget(name=name, design=design, color=color, mode=mode, parent=frame)
+        # Portada física realista del Binder (Issue #13 / #21)
+        cover = BinderCoverWidget(
+            name=name,
+            design=design,
+            color=color,
+            mode=mode,
+            custom_image=custom_image,
+            locked=locked,
+            parent=frame,
+        )
         cover.setFixedSize(196, 212)
         self._folder_cover_widgets[f_id] = cover
         layout.addWidget(cover, alignment=Qt.AlignmentFlag.AlignHCenter)
 
-        # Resumen de precio acumulativo por API
+        # Resumen de precio acumulativo de mercado
         price_res = self.calcular_precios_carpeta(f_data)
         src_map = price_res["sources"]
         if src_map:
@@ -1735,7 +1865,7 @@ class BinderView(QWidget):
         )
         layout.addWidget(lbl_folder_val)
 
-        # Fila inferior: cantidad de cartas + acción discreta de eliminar
+        # Fila inferior: cantidad de cartas + menú '...' de acciones del binder (Issue #21)
         bottom_row = QHBoxLayout()
         bottom_row.setContentsMargins(2, 0, 2, 0)
         bottom_row.setSpacing(6)
@@ -1745,26 +1875,30 @@ class BinderView(QWidget):
         bottom_row.addWidget(lbl_count)
         bottom_row.addStretch()
 
-        btn_del = QPushButton(t("Eliminar"))
-        btn_del.setFixedHeight(22)
-        btn_del.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_del.setStyleSheet("""
+        btn_more = QPushButton("...")
+        btn_more.setFixedSize(30, 24)
+        btn_more.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_more.setToolTip(t("Opciones del binder"))
+        btn_more.setStyleSheet("""
             QPushButton {
-                background: transparent;
-                color: #b91c1c;
-                border: 1px solid #fecaca;
-                border-radius: 6px;
-                padding: 0 8px;
-                font-size: 10px;
-                font-weight: 600;
+                background: #fff0f4;
+                color: #703043;
+                border: 1.5px solid #f2c4ce;
+                border-radius: 7px;
+                font-size: 13px;
+                font-weight: 800;
+                padding: 0 0 4px 0;
             }
             QPushButton:hover {
-                background: #fee2e2;
-                border-color: #ef4444;
+                background: #f7a8b8;
+                color: #ffffff;
+                border-color: #f56b7b;
             }
         """)
-        btn_del.clicked.connect(lambda ch, target_id=f_id, target_name=name: self._eliminar_carpeta_directa(target_id, target_name))
-        bottom_row.addWidget(btn_del)
+        btn_more.clicked.connect(
+            lambda ch=False, target_id=f_id, anchor=btn_more: self._abrir_menu_carpeta(target_id, anchor)
+        )
+        bottom_row.addWidget(btn_more)
 
         layout.addLayout(bottom_row)
 
@@ -1787,9 +1921,120 @@ class BinderView(QWidget):
 
         return frame
 
+    def _abrir_menu_carpeta(self, folder_id: str, anchor_btn: QPushButton):
+        """Despliega el menú contextual '...' con acciones sobre el binder."""
+        folders = self.get_user_folders()
+        f_data = folders.get(folder_id)
+        if not f_data:
+            return
+        name = f_data.get("name", "Carpeta")
+        is_locked = bool(f_data.get("locked", False))
+
+        menu = QMenu(self)
+        menu.setStyleSheet("""
+            QMenu {
+                background-color: #0f172a;
+                color: #f8fafc;
+                border: 1.5px solid #f29ca4;
+                border-radius: 8px;
+                padding: 4px;
+                font-size: 12px;
+            }
+            QMenu::item {
+                padding: 6px 18px 6px 12px;
+                border-radius: 5px;
+                color: #f8fafc;
+            }
+            QMenu::item:selected {
+                background-color: #e25b70;
+                color: #ffffff;
+            }
+            QMenu::item:disabled {
+                color: #64748b;
+            }
+            QMenu::separator {
+                height: 1px;
+                background: #334155;
+                margin: 4px 8px;
+            }
+        """)
+
+        act_lock = QAction(t("Desbloquear") if is_locked else t("Bloquear"), menu)
+        act_lock.triggered.connect(lambda: self._toggle_bloquear_carpeta(folder_id))
+        menu.addAction(act_lock)
+
+        act_edit = QAction(t("Editar"), menu)
+        act_edit.setEnabled(not is_locked)
+        act_edit.triggered.connect(lambda: self.abrir_dialogo_editar_carpeta(folder_id))
+        menu.addAction(act_edit)
+
+        act_dup = QAction(t("Duplicar"), menu)
+        act_dup.triggered.connect(lambda: self._duplicar_carpeta(folder_id))
+        menu.addAction(act_dup)
+
+        menu.addSeparator()
+
+        act_csv = QAction(t("Exportar CSV"), menu)
+        act_csv.triggered.connect(lambda: self.open_binder_in_print_requested.emit(folder_id, "csv"))
+        menu.addAction(act_csv)
+
+        act_print = QAction(t("Imprimir"), menu)
+        act_print.triggered.connect(lambda: self.open_binder_in_print_requested.emit(folder_id, "print"))
+        menu.addAction(act_print)
+
+        menu.addSeparator()
+
+        act_del = QAction(t("Eliminar"), menu)
+        act_del.setEnabled(not is_locked)
+        act_del.triggered.connect(lambda: self._eliminar_carpeta_directa(folder_id, name))
+        menu.addAction(act_del)
+
+        menu.exec(anchor_btn.mapToGlobal(QPoint(0, anchor_btn.height() + 2)))
+
+    def _toggle_bloquear_carpeta(self, folder_id: str):
+        folders = self.get_user_folders()
+        f_data = folders.get(folder_id)
+        if not f_data:
+            return
+        new_state = not bool(f_data.get("locked", False))
+        f_data["locked"] = new_state
+        self.save_binder_data()
+        self.render_folders_grid()
+        msg = t("Binder bloqueado (protegido contra edición y eliminación)") if new_state else t("Binder desbloqueado")
+        show_toast(msg, "info")
+
+    def _duplicar_carpeta(self, folder_id: str):
+        folders = self.get_user_folders()
+        orig = folders.get(folder_id)
+        if not orig:
+            return
+        import time
+        new_id = f"folder_{int(time.time() * 1000)}"
+        cloned = copy.deepcopy(orig)
+        cloned["name"] = f"{orig.get('name', 'Binder')} (Copia)"
+        cloned["locked"] = False
+        folders[new_id] = cloned
+        self.save_binder_data()
+        self.render_folders_grid()
+        self.update_folder_combo()
+        show_toast(f"{t('Binder duplicado')}: {cloned['name']}", "success")
+
+    def editar_carpeta_actual(self):
+        if not self.current_folder_id:
+            return
+        folders = self.get_user_folders()
+        f_data = folders.get(self.current_folder_id, {})
+        if f_data.get("locked", False):
+            show_toast(t("Este binder está bloqueado. Desbloquéalo desde Mis Binders para editarlo."), "warning", 3000)
+            return
+        self.abrir_dialogo_editar_carpeta(self.current_folder_id)
+
     def _eliminar_carpeta_directa(self, folder_id, folder_name):
         folders = self.get_user_folders()
         if len(folders) <= 0:
+            return
+        if folders.get(folder_id, {}).get("locked", False):
+            show_toast(t("Este binder está bloqueado y no se puede eliminar."), "warning", 2500)
             return
         resp = QMessageBox.question(
             self,
@@ -1854,9 +2099,25 @@ class BinderView(QWidget):
         self.abrir_carpeta(folder_id)
 
     def abrir_dialogo_crear_carpeta(self):
+        self._abrir_dialogo_binder(edit_folder_id=None)
+
+    def abrir_dialogo_editar_carpeta(self, folder_id: str):
+        folders = self.get_user_folders()
+        if folder_id not in folders:
+            return
+        if folders[folder_id].get("locked", False):
+            show_toast(t("Este binder está bloqueado. Desbloquéalo primero para editarlo."), "warning", 2500)
+            return
+        self._abrir_dialogo_binder(edit_folder_id=folder_id)
+
+    def _abrir_dialogo_binder(self, edit_folder_id: str | None = None):
+        folders = self.get_user_folders()
+        editing = edit_folder_id is not None and edit_folder_id in folders
+        existing = folders.get(edit_folder_id, {}) if editing else {}
+
         dlg = QDialog(self)
-        dlg.setWindowTitle(t("Crear Nuevo Binder"))
-        dlg.setFixedSize(580, 390)
+        dlg.setWindowTitle(t("Editar Binder") if editing else t("Crear Nuevo Binder"))
+        dlg.setFixedSize(640, 475)
         dlg.setStyleSheet("""
             QDialog {
                 background-color: #fff5f7;
@@ -1869,7 +2130,7 @@ class BinderView(QWidget):
             QLineEdit, QComboBox {
                 border: 2px solid #f7a8b8;
                 border-radius: 10px;
-                padding: 7px 10px;
+                padding: 6px 10px;
                 background-color: #ffffff;
                 color: #5a2a3a;
                 font-size: 13px;
@@ -1877,15 +2138,52 @@ class BinderView(QWidget):
             QLineEdit:focus, QComboBox:focus {
                 border-color: #f56b7b;
             }
+            QTabWidget::pane {
+                border: 1.5px solid #f2c4ce;
+                border-radius: 10px;
+                background-color: #ffffff;
+                padding: 6px;
+            }
+            QTabBar::tab {
+                background-color: #ffeef2;
+                color: #703043;
+                border: 1.5px solid #f2c4ce;
+                border-bottom: none;
+                border-top-left-radius: 8px;
+                border-top-right-radius: 8px;
+                padding: 6px 16px;
+                font-weight: 700;
+                font-size: 12px;
+                margin-right: 4px;
+            }
+            QTabBar::tab:selected {
+                background-color: #f56b7b;
+                color: #ffffff;
+                border-color: #e25b70;
+            }
         """)
 
         outer_layout = QHBoxLayout(dlg)
-        outer_layout.setContentsMargins(22, 20, 22, 20)
-        outer_layout.setSpacing(20)
+        outer_layout.setContentsMargins(20, 18, 20, 18)
+        outer_layout.setSpacing(18)
 
-        # --- Columna Izquierda: Vista previa física en vivo del Binder (Issue #13) ---
+        default_design = resolve_design_key(existing.get("design", list(BINDER_DESIGNS.keys())[0]))
+        init_name = existing.get("name", "") if editing else ""
+        init_mode = existing.get("mode", "3x3") if editing else "3x3"
+        init_color = existing.get("color", "auto") if editing else "auto"
+        init_custom_image = existing.get("custom_image") if editing else None
+        init_interior = (
+            existing.get("interior_color")
+            if editing and existing.get("interior_color")
+            else get_design_default_interior_color(default_design)
+        )
+        is_custom_initially = bool(
+            editing and (init_custom_image or (init_color and init_color not in ("", "auto", "#ffeef2")))
+        )
+
+        # --- Columna Izquierda: Vista previa física en vivo + muestra de color interior ---
         preview_panel = QFrame()
-        preview_panel.setFixedWidth(215)
+        preview_panel.setFixedWidth(218)
         preview_panel.setStyleSheet("""
             QFrame {
                 background-color: #ffffff;
@@ -1894,7 +2192,7 @@ class BinderView(QWidget):
             }
         """)
         preview_layout = QVBoxLayout(preview_panel)
-        preview_layout.setContentsMargins(12, 14, 12, 14)
+        preview_layout.setContentsMargins(12, 12, 12, 12)
         preview_layout.setSpacing(8)
 
         lbl_prev_title = QLabel(t("Vista Previa"))
@@ -1902,88 +2200,267 @@ class BinderView(QWidget):
         lbl_prev_title.setStyleSheet("font-size: 12px; font-weight: 700; color: #8c5464; border: none; background: transparent;")
         preview_layout.addWidget(lbl_prev_title)
 
-        default_design = list(BINDER_DESIGNS.keys())[0]
-        live_preview = BinderCoverWidget(name="Mi Binder", design=default_design, color="auto", mode="3x3", parent=preview_panel)
-        live_preview.setFixedSize(190, 248)
+        live_preview = BinderCoverWidget(
+            name=init_name or "Mi Binder",
+            design=default_design,
+            color=init_color,
+            mode=init_mode,
+            custom_image=init_custom_image,
+            parent=preview_panel,
+        )
+        live_preview.setFixedSize(190, 246)
         preview_layout.addWidget(live_preview, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        lbl_int_prev_title = QLabel(t("Color interior de hojas"))
+        lbl_int_prev_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lbl_int_prev_title.setStyleSheet("font-size: 11px; font-weight: 600; color: #8c5464; border: none; background: transparent;")
+        preview_layout.addWidget(lbl_int_prev_title)
+
+        interior_swatch = QLabel()
+        interior_swatch.setFixedHeight(32)
+        interior_swatch.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        preview_layout.addWidget(interior_swatch)
         preview_layout.addStretch()
 
         outer_layout.addWidget(preview_panel)
 
-        # --- Columna Derecha: Formulario limpio y sin emojis ---
+        # --- Columna Derecha: Formulario con Predefinidos / Personalizar + Color interior ---
         form_layout = QVBoxLayout()
-        form_layout.setSpacing(10)
+        form_layout.setSpacing(8)
 
-        lbl_heading = QLabel(t("Configura tu Binder"))
+        lbl_heading = QLabel(t("Editar Binder") if editing else t("Configura tu Binder"))
         lbl_heading.setStyleSheet("font-size: 16px; font-weight: 700; color: #5a2a3a;")
         form_layout.addWidget(lbl_heading)
 
-        form_layout.addWidget(QLabel(t("Nombre de la carpeta")))
-        txt_nombre = QLineEdit()
-        txt_nombre.setPlaceholderText(t("Ej: Charizards, Set 151, Intercambios..."))
-        form_layout.addWidget(txt_nombre)
+        # Nombre + Tamaño en fila compacta
+        row_top = QHBoxLayout()
+        row_top.setSpacing(10)
 
-        form_layout.addWidget(QLabel(t("Tamaño de bolsillos")))
+        col_name = QVBoxLayout()
+        col_name.setSpacing(4)
+        col_name.addWidget(QLabel(t("Nombre de la carpeta")))
+        txt_nombre = QLineEdit()
+        txt_nombre.setText(init_name)
+        txt_nombre.setPlaceholderText(t("Ej: Charizards, Set 151, Intercambios..."))
+        col_name.addWidget(txt_nombre)
+        row_top.addLayout(col_name, 2)
+
+        col_mode = QVBoxLayout()
+        col_mode.setSpacing(4)
+        col_mode.addWidget(QLabel(t("Bolsillos")))
         combo_tamano = QComboBox()
         combo_tamano.addItems(["3x3", "2x2", "3x4", "4x4"])
-        form_layout.addWidget(combo_tamano)
+        idx_m = combo_tamano.findText(init_mode)
+        if idx_m >= 0:
+            combo_tamano.setCurrentIndex(idx_m)
+        col_mode.addWidget(combo_tamano)
+        row_top.addLayout(col_mode, 1)
 
-        form_layout.addWidget(QLabel(t("Diseño de portada")))
+        form_layout.addLayout(row_top)
+
+        # Estado mutable del diálogo
+        state = {
+            "custom_color": init_color if (init_color and init_color not in ("auto", "#ffeef2")) else "#1e1b26",
+            "custom_image": init_custom_image,
+            "interior_color": init_interior,
+            "interior_overridden": bool(editing and existing.get("interior_color")),
+        }
+
+        # Pestañas: Predefinidos vs Personalizar
+        tabs = QTabWidget()
+
+        # -- Tab 1: Predefinidos --
+        tab_predef = QWidget()
+        tab_predef.setStyleSheet("background: transparent;")
+        predef_layout = QVBoxLayout(tab_predef)
+        predef_layout.setContentsMargins(10, 10, 10, 10)
+        predef_layout.setSpacing(8)
+
+        predef_layout.addWidget(QLabel(t("Diseño predefinido (asigna portada, color e interior)")))
         combo_diseno = QComboBox()
         combo_diseno.addItems(list(BINDER_DESIGNS.keys()))
-        form_layout.addWidget(combo_diseno)
+        idx_d = combo_diseno.findText(default_design)
+        if idx_d >= 0:
+            combo_diseno.setCurrentIndex(idx_d)
+        predef_layout.addWidget(combo_diseno)
 
-        form_layout.addWidget(QLabel(t("Color de portada")))
-        color_row = QHBoxLayout()
-        color_row.setSpacing(8)
+        lbl_predef_hint = QLabel(
+            t("Cada diseño aplica automáticamente su color de carpeta, ilustración y color interior recomendado.")
+        )
+        lbl_predef_hint.setWordWrap(True)
+        lbl_predef_hint.setStyleSheet("font-size: 11px; font-weight: 400; color: #8c5464;")
+        predef_layout.addWidget(lbl_predef_hint)
+        predef_layout.addStretch()
+        tabs.addTab(tab_predef, t("Predefinidos"))
 
-        selected_color = ["auto"]
+        # -- Tab 2: Personalizar --
+        tab_custom = QWidget()
+        tab_custom.setStyleSheet("background: transparent;")
+        custom_layout = QVBoxLayout(tab_custom)
+        custom_layout.setContentsMargins(10, 10, 10, 10)
+        custom_layout.setSpacing(8)
 
-        btn_color = QPushButton(t("Color personalizado"))
-        btn_color.setFixedHeight(32)
-        btn_color.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_color.setProperty("class", "pill")
+        custom_layout.addWidget(QLabel(t("Color completo de la carpeta")))
+        btn_cover_color = QPushButton()
+        btn_cover_color.setFixedHeight(32)
+        btn_cover_color.setCursor(Qt.CursorShape.PointingHandCursor)
+        custom_layout.addWidget(btn_cover_color)
 
-        btn_reset_color = QPushButton(t("Color del diseño"))
-        btn_reset_color.setFixedHeight(32)
-        btn_reset_color.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_reset_color.setProperty("class", "pill")
+        custom_layout.addWidget(QLabel(t("Imagen de portada (opcional, soporta PNG transparente)")))
+        img_row = QHBoxLayout()
+        img_row.setSpacing(8)
+        btn_pick_img = QPushButton(t("Elegir imagen..."))
+        btn_pick_img.setFixedHeight(32)
+        btn_pick_img.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_pick_img.setProperty("class", "pill")
 
-        def refresh_preview():
-            live_preview.set_binder_props(
-                name=txt_nombre.text().strip() or "Mi Binder",
-                design=combo_diseno.currentText(),
-                color=selected_color[0],
-                mode=combo_tamano.currentText(),
+        btn_clear_img = QPushButton(t("Quitar imagen"))
+        btn_clear_img.setFixedHeight(32)
+        btn_clear_img.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_clear_img.setProperty("class", "pill")
+
+        img_row.addWidget(btn_pick_img, 1)
+        img_row.addWidget(btn_clear_img)
+        custom_layout.addLayout(img_row)
+
+        lbl_img_file = QLabel("")
+        lbl_img_file.setStyleSheet("font-size: 11px; font-weight: 400; color: #703043;")
+        custom_layout.addWidget(lbl_img_file)
+        custom_layout.addStretch()
+        tabs.addTab(tab_custom, t("Personalizar"))
+
+        if is_custom_initially:
+            tabs.setCurrentIndex(1)
+
+        form_layout.addWidget(tabs)
+
+        # Sección: Color del interior del binder (aplica a ambos modos)
+        form_layout.addWidget(QLabel(t("Color del interior del binder (fondo de las páginas)")))
+        int_row = QHBoxLayout()
+        int_row.setSpacing(8)
+        btn_interior_color = QPushButton()
+        btn_interior_color.setFixedHeight(32)
+        btn_interior_color.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        btn_reset_interior = QPushButton(t("Por defecto"))
+        btn_reset_interior.setFixedHeight(32)
+        btn_reset_interior.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_reset_interior.setProperty("class", "pill")
+
+        int_row.addWidget(btn_interior_color, 1)
+        int_row.addWidget(btn_reset_interior)
+        form_layout.addLayout(int_row)
+
+        def _contrast_text(hex_col: str) -> str:
+            c = QColor(hex_col)
+            if not c.isValid():
+                return "#ffffff"
+            luma = 0.299 * c.red() + 0.587 * c.green() + 0.114 * c.blue()
+            return "#1e293b" if luma > 160 else "#ffffff"
+
+        def refresh_ui():
+            is_custom = tabs.currentIndex() == 1
+            cur_design = combo_diseno.currentText()
+            if not state["interior_overridden"] and not is_custom:
+                state["interior_color"] = get_design_default_interior_color(cur_design)
+
+            # Botón color de portada (Personalizar)
+            cc = state["custom_color"]
+            btn_cover_color.setText(f"{t('Color de carpeta')}: {cc.upper()}")
+            btn_cover_color.setStyleSheet(
+                f"background-color: {cc}; color: {_contrast_text(cc)}; "
+                f"border: 2px solid #5a2a3a; border-radius: 9px; font-weight: 700;"
             )
 
-        def choose_color():
-            c = QColorDialog.getColor(parent=dlg, title=t("Color de portada"))
-            if c.isValid():
-                selected_color[0] = c.name()
-                btn_color.setText(selected_color[0].upper())
-                btn_color.setStyleSheet(
-                    f"background-color: {selected_color[0]}; color: #ffffff; "
-                    f"border: 2px solid #5a2a3a; border-radius: 10px; font-weight: bold;"
+            # Etiqueta archivo imagen personalizada
+            if state["custom_image"]:
+                lbl_img_file.setText(f"{t('Imagen')}: {os.path.basename(state['custom_image'])}")
+                btn_clear_img.setEnabled(True)
+            else:
+                lbl_img_file.setText(t("Sin imagen personalizada (se usará color liso minimalista)"))
+                btn_clear_img.setEnabled(False)
+
+            # Botón y swatch de color interior
+            ic = state["interior_color"]
+            ic_txt = _contrast_text(ic)
+            btn_interior_color.setText(f"{t('Interior')}: {ic.upper()}")
+            btn_interior_color.setStyleSheet(
+                f"background-color: {ic}; color: {ic_txt}; "
+                f"border: 2px solid #5a2a3a; border-radius: 9px; font-weight: 700;"
+            )
+            interior_swatch.setText(ic.upper())
+            interior_swatch.setStyleSheet(
+                f"background-color: {ic}; color: {ic_txt}; "
+                f"border: 1.5px solid #cbd5e1; border-radius: 8px; font-size: 11px; font-weight: 700;"
+            )
+
+            # Actualizar vista previa 3D
+            if is_custom:
+                live_preview.set_binder_props(
+                    name=txt_nombre.text().strip() or "Mi Binder",
+                    design="Ultra PRO Minimalista",
+                    color=state["custom_color"],
+                    mode=combo_tamano.currentText(),
+                    custom_image=state["custom_image"],
                 )
-                refresh_preview()
+            else:
+                live_preview.set_binder_props(
+                    name=txt_nombre.text().strip() or "Mi Binder",
+                    design=cur_design,
+                    color="auto",
+                    mode=combo_tamano.currentText(),
+                    custom_image=None,
+                )
 
-        def reset_color():
-            selected_color[0] = "auto"
-            btn_color.setText(t("Color personalizado"))
-            btn_color.setStyleSheet("")
-            btn_color.setProperty("class", "pill")
-            refresh_preview()
+        def choose_cover_color():
+            initial = QColor(state["custom_color"])
+            c = QColorDialog.getColor(initial, dlg, t("Color de portada"))
+            if c.isValid():
+                state["custom_color"] = c.name()
+                refresh_ui()
 
-        btn_color.clicked.connect(choose_color)
-        btn_reset_color.clicked.connect(reset_color)
-        txt_nombre.textChanged.connect(lambda _: refresh_preview())
-        combo_diseno.currentTextChanged.connect(lambda _: refresh_preview())
-        combo_tamano.currentTextChanged.connect(lambda _: refresh_preview())
+        def choose_custom_image():
+            file_path, _ = QFileDialog.getOpenFileName(
+                dlg,
+                t("Seleccionar imagen para portada del Binder"),
+                "",
+                "Imágenes (*.png *.jpg *.jpeg *.webp *.bmp)"
+            )
+            if file_path and os.path.exists(file_path):
+                state["custom_image"] = file_path
+                refresh_ui()
 
-        color_row.addWidget(btn_color, 1)
-        color_row.addWidget(btn_reset_color)
-        form_layout.addLayout(color_row)
+        def clear_custom_image():
+            state["custom_image"] = None
+            refresh_ui()
+
+        def choose_interior_color():
+            initial = QColor(state["interior_color"])
+            c = QColorDialog.getColor(initial, dlg, t("Color del interior del binder"))
+            if c.isValid():
+                state["interior_color"] = c.name()
+                state["interior_overridden"] = True
+                refresh_ui()
+
+        def reset_interior_color():
+            state["interior_overridden"] = False
+            state["interior_color"] = (
+                "#18181e" if tabs.currentIndex() == 1
+                else get_design_default_interior_color(combo_diseno.currentText())
+            )
+            refresh_ui()
+
+        btn_cover_color.clicked.connect(choose_cover_color)
+        btn_pick_img.clicked.connect(choose_custom_image)
+        btn_clear_img.clicked.connect(clear_custom_image)
+        btn_interior_color.clicked.connect(choose_interior_color)
+        btn_reset_interior.clicked.connect(reset_interior_color)
+        txt_nombre.textChanged.connect(lambda _: refresh_ui())
+        combo_diseno.currentTextChanged.connect(lambda _: refresh_ui())
+        combo_tamano.currentTextChanged.connect(lambda _: refresh_ui())
+        tabs.currentChanged.connect(lambda _: refresh_ui())
+
+        refresh_ui()
 
         form_layout.addStretch()
 
@@ -2005,10 +2482,10 @@ class BinderView(QWidget):
         """)
         btn_cancel.clicked.connect(dlg.reject)
 
-        btn_crear = QPushButton(t("Crear Carpeta"))
-        btn_crear.setFixedHeight(36)
-        btn_crear.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_crear.setStyleSheet("""
+        btn_save = QPushButton(t("Guardar Cambios") if editing else t("Crear Carpeta"))
+        btn_save.setFixedHeight(36)
+        btn_save.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_save.setStyleSheet("""
             QPushButton {
                 background-color: #f7a8b8;
                 color: #ffffff;
@@ -2023,38 +2500,95 @@ class BinderView(QWidget):
             }
         """)
 
-        def on_crear():
+        def on_save():
             nombre = txt_nombre.text().strip()
             if not nombre:
                 QMessageBox.warning(dlg, t("Aviso"), t("Debes ingresar un nombre para la carpeta."))
                 return
-            import time
-            new_id = f"folder_{int(time.time() * 1000)}"
-            folders = self.get_user_folders()
-            folders[new_id] = {
-                "name": nombre,
-                "color": selected_color[0],
-                "design": combo_diseno.currentText(),
-                "mode": combo_tamano.currentText(),
-                "cards": {
-                    "2x2": {},
-                    "3x3": {},
-                    "3x4": {},
-                    "4x4": {}
-                }
-            }
-            self.save_binder_data()
-            self.current_folder_id = new_id
-            self.current_mode = combo_tamano.currentText()
-            self.current_spread_index = 0
-            self.render_folders_grid()
-            show_toast(f"Carpeta '{nombre}' creada con éxito", "info")
-            dlg.accept()
-            self.abrir_carpeta(new_id)
 
-        btn_crear.clicked.connect(on_crear)
+            is_custom = tabs.currentIndex() == 1
+            final_design = "Ultra PRO Minimalista" if is_custom else combo_diseno.currentText()
+            final_color = state["custom_color"] if is_custom else "auto"
+            final_interior = state["interior_color"]
+            final_mode = combo_tamano.currentText()
+
+            # Persistir imagen personalizada en BINDER_COVERS_DIR para que no se pierda si mueven el archivo original
+            final_custom_image = None
+            if is_custom and state["custom_image"]:
+                src_path = state["custom_image"]
+                if os.path.isabs(src_path) and os.path.exists(src_path):
+                    try:
+                        os.makedirs(BINDER_COVERS_DIR, exist_ok=True)
+                        abs_covers = os.path.abspath(BINDER_COVERS_DIR)
+                        if os.path.abspath(src_path).startswith(abs_covers):
+                            final_custom_image = os.path.basename(src_path)
+                        else:
+                            import time
+                            ext = os.path.splitext(src_path)[1].lower() or ".png"
+                            fname = f"cover_{int(time.time() * 1000)}{ext}"
+                            shutil.copy2(src_path, os.path.join(BINDER_COVERS_DIR, fname))
+                            final_custom_image = fname
+                    except Exception as e:
+                        print(f"Error copiando imagen personalizada de binder: {e}")
+                        final_custom_image = src_path
+                else:
+                    final_custom_image = src_path
+
+            if editing:
+                f_obj = folders[edit_folder_id]
+                f_obj["name"] = nombre
+                f_obj["design"] = final_design
+                f_obj["color"] = final_color
+                f_obj["custom_image"] = final_custom_image
+                f_obj["interior_color"] = final_interior
+                f_obj["mode"] = final_mode
+                f_obj.setdefault("cards", {"2x2": {}, "3x3": {}, "3x4": {}, "4x4": {}})
+                for m_key in ("2x2", "3x3", "3x4", "4x4"):
+                    f_obj["cards"].setdefault(m_key, {})
+
+                self.save_binder_data()
+                self.render_folders_grid()
+                self.update_folder_combo()
+
+                # Si estamos editando el binder actualmente abierto, refrescar en vivo
+                if self.current_folder_id == edit_folder_id and self.main_stack.currentWidget() == self.binder_pages_widget:
+                    self.current_mode = final_mode
+                    badge_design = t("Personalizado") if is_custom else final_design
+                    self.lbl_folder_info_badge.setText(f"{self.current_mode}  |  {badge_design}")
+                    self.update_spread(direction=0)
+
+                show_toast(f"{t('Binder actualizado')}: {nombre}", "success")
+                dlg.accept()
+            else:
+                import time
+                new_id = f"folder_{int(time.time() * 1000)}"
+                folders[new_id] = {
+                    "name": nombre,
+                    "color": final_color,
+                    "design": final_design,
+                    "custom_image": final_custom_image,
+                    "interior_color": final_interior,
+                    "locked": False,
+                    "mode": final_mode,
+                    "cards": {
+                        "2x2": {},
+                        "3x3": {},
+                        "3x4": {},
+                        "4x4": {}
+                    }
+                }
+                self.save_binder_data()
+                self.current_folder_id = new_id
+                self.current_mode = final_mode
+                self.current_spread_index = 0
+                self.render_folders_grid()
+                show_toast(f"Carpeta '{nombre}' creada con éxito", "info")
+                dlg.accept()
+                self.abrir_carpeta(new_id)
+
+        btn_save.clicked.connect(on_save)
         btn_row.addWidget(btn_cancel)
-        btn_row.addWidget(btn_crear)
+        btn_row.addWidget(btn_save)
         form_layout.addLayout(btn_row)
 
         outer_layout.addLayout(form_layout, 1)
@@ -2175,10 +2709,39 @@ class BinderView(QWidget):
         for slot in selected_slots:
             self.set_card_at(slot.page_index, slot.slot_index, None)
             slot.set_selected(False)
-            slot.clear_card()
+            slot.clear_card(animate_remove=True)
 
         self.update_selection_state()
         self.actualizar_resumen_precios_binder()
+        self.refresh_page_minimap()
+
+    def quitar_carta_arrastrada(self, source_slot_key: str):
+        """Quita una carta del binder cuando el usuario la arrastra de vuelta a su colección (Issue #23)."""
+        if not source_slot_key or "_" not in source_slot_key:
+            return
+        try:
+            page_str, slot_str = source_slot_key.split("_", 1)
+            page_idx = int(page_str)
+            slot_idx = int(slot_str)
+        except Exception:
+            return
+
+        self.set_card_at(page_idx, slot_idx, None)
+
+        target_slot = None
+        for page in (self.page_left, self.page_right):
+            if page and page.page_index == page_idx:
+                target_slot = page.get_slot(slot_idx)
+                break
+
+        if target_slot is not None:
+            target_slot.set_selected(False)
+            target_slot.clear_card(animate_remove=True)
+
+        self.update_selection_state()
+        self.actualizar_resumen_precios_binder()
+        self.refresh_page_minimap()
+        show_toast(t("Carta devuelta a tu colección"), "info")
 
     def retranslate_ui(self):
         self.title_lbl.setText(t("Binder"))
@@ -2407,6 +2970,7 @@ class BinderView(QWidget):
         
     def create_spread_widget(self, spread_index, mode=None):
         _, design, color, _ = self._get_current_folder_theme()
+        _custom_img, interior_color, _locked = self._get_current_folder_extra()
         spread_widget = BinderSpreadFrame(
             design=design,
             color=color,
@@ -2431,6 +2995,7 @@ class BinderView(QWidget):
             card_w=cfg["card_w"],
             card_h=cfg["card_h"],
             is_left=True,
+            interior_color=interior_color,
         )
         page_right = BinderPage(
             p_idx_2, self,
@@ -2441,6 +3006,7 @@ class BinderView(QWidget):
             card_w=cfg["card_w"],
             card_h=cfg["card_h"],
             is_left=False,
+            interior_color=interior_color,
         )
 
         # Populate slots

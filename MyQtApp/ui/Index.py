@@ -50,15 +50,15 @@ class BotonConSonido(QPushButton):
 
 
 class VariantLegendSidebarWidget(QWidget):
-    """Panel vertical compacto en la columna lateral izquierda que describe el significado de cada color de variante."""
+    """Panel vertical compacto en la columna lateral izquierda que muestra los colores de las Variantes."""
     def __init__(self, parent=None):
         super().__init__(parent)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 8, 10, 8)
-        layout.setSpacing(5)
+        layout.setContentsMargins(10, 7, 10, 7)
+        layout.setSpacing(3)
 
-        header = QLabel(t("Leyenda Variantes"), self)
-        header.setStyleSheet("font-weight: bold; font-size: 11px; color: #38bdf8;")
+        header = QLabel(t("Variantes"), self)
+        header.setStyleSheet("font-weight: bold; font-size: 11px; color: #38bdf8; border: none; background: transparent;")
         layout.addWidget(header)
 
         from MyQtApp.config import VARIANT_COLOR_MAP
@@ -68,11 +68,11 @@ class VariantLegendSidebarWidget(QWidget):
             item_row.setSpacing(6)
 
             color_badge = QLabel(self)
-            color_badge.setFixedSize(10, 16)
+            color_badge.setFixedSize(10, 12)
             color_badge.setStyleSheet(f"background-color: {info['color']}; border: 1px solid {info['border']}; border-radius: 3px;")
 
             desc = QLabel(f"{info['name']}", self)
-            desc.setStyleSheet("font-size: 11px; color: #f8fafc; font-weight: 500;")
+            desc.setStyleSheet("font-size: 10px; color: #f8fafc; font-weight: 500; border: none; background: transparent;")
 
             item_row.addWidget(color_badge)
             item_row.addWidget(desc)
@@ -81,8 +81,8 @@ class VariantLegendSidebarWidget(QWidget):
 
         self.setStyleSheet("""
             QWidget {
-                background-color: rgba(15, 23, 42, 0.7);
-                border: 1px solid rgba(56, 189, 248, 0.3);
+                background-color: rgba(15, 23, 42, 0.78);
+                border: 1px solid rgba(56, 189, 248, 0.35);
                 border-radius: 10px;
             }
         """)
@@ -247,6 +247,10 @@ class MainWindow(QWidget):
         if hasattr(ajustes, 'username_changed'):
             ajustes.username_changed.connect(self.on_username_changed)
 
+        binder_view = self.paginas.widget(1)
+        if hasattr(binder_view, 'open_binder_in_print_requested'):
+            binder_view.open_binder_in_print_requested.connect(self.abrir_binder_en_print)
+
         self.actualizar_botones_secundarios(0)
 
         # Configurar audio
@@ -289,6 +293,13 @@ class MainWindow(QWidget):
 
     def toggle_animaciones(self, estado):
         self.animaciones_activas = estado
+
+    def abrir_binder_en_print(self, binder_id: str, action: str = "print"):
+        """Redirige al usuario a la sección Print y carga automáticamente el binder en la cola."""
+        self.animar_transicion(4)
+        print_view = self.paginas.widget(4)
+        if hasattr(print_view, "cargar_binder_automatico"):
+            print_view.cargar_binder_automatico(binder_id)
 
     def actualizar_tamano_cartas(self, size):
         try:
@@ -363,7 +374,7 @@ class MainWindow(QWidget):
             self.btn_eliminar.setVisible(indice == 2)
             self.btn_vaciar.setVisible(indice == 1)
             if hasattr(self, 'variant_legend_sidebar') and self.variant_legend_sidebar:
-                self.variant_legend_sidebar.setVisible(indice == 1)
+                self.variant_legend_sidebar.setVisible(indice in (1, 2))
         except Exception as e:
             print(f"Error en actualizar_botones_secundarios: {e}")
 

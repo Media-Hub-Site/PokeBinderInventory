@@ -73,12 +73,44 @@ def normalize_lang_code(lang: str) -> str:
     return LANG_NORMALIZE_MAP.get(clean, clean[:2] if len(clean) >= 2 else "es")
 
 VARIANT_COLOR_MAP = {
-    "Holo": {"name": "Holográfica", "color": "#a855f7", "icon": "🟣", "border": "#c084fc"},
-    "Reverse": {"name": "Reverse Holo", "color": "#22c55e", "icon": "🟢", "border": "#4ade80"},
-    "1st Edition": {"name": "1ª Edición", "color": "#eab308", "icon": "🟡", "border": "#fde047"},
-    "Proxy": {"name": "Proxy / Copia", "color": "#f97316", "icon": "🟠", "border": "#fb923c"},
-    "Normal": {"name": "Normal / Base", "color": "#0284c7", "icon": "🔵", "border": "#38bdf8"},
+    "Normal": {"name": "Normal", "color": "#0284c7", "border": "#38bdf8"},
+    "Holográfica": {"name": "Holográfica", "color": "#9333ea", "border": "#c084fc"},
+    "Holográfica Reverse": {"name": "Holográfica Reverse", "color": "#16a34a", "border": "#4ade80"},
+    "Pokeball": {"name": "Pokeball", "color": "#dc2626", "border": "#f87171"},
+    "Masterball": {"name": "Masterball", "color": "#a21caf", "border": "#e879f9"},
+    "Full Art": {"name": "Full Art", "color": "#d97706", "border": "#fbbf24"},
+    "Cosmo Holo": {"name": "Cosmo Holo", "color": "#4f46e5", "border": "#818cf8"},
+    "Cracked Ice Holo": {"name": "Cracked Ice Holo", "color": "#06b6d4", "border": "#67e8f9"},
+    "Confetti Holo": {"name": "Confetti Holo", "color": "#ec4899", "border": "#f9a8d4"},
 }
+
+LEGACY_VARIANT_MAP = {
+    "holo": "Holográfica",
+    "holografica": "Holográfica",
+    "holográfica": "Holográfica",
+    "reverse": "Holográfica Reverse",
+    "reverse holo": "Holográfica Reverse",
+    "holografica reverse": "Holográfica Reverse",
+    "holográfica reverse": "Holográfica Reverse",
+    "pokeball": "Pokeball",
+    "masterball": "Masterball",
+    "full art": "Full Art",
+    "cosmo holo": "Cosmo Holo",
+    "cracked ice holo": "Cracked Ice Holo",
+    "confetti holo": "Confetti Holo",
+    "normal": "Normal",
+    "normal / base": "Normal",
+}
+
+
+def normalize_variant_name(variante: str | None) -> str:
+    """Normaliza cualquier nombre de variante (incluyendo heredados) al catálogo oficial de Variantes."""
+    if not variante:
+        return "Normal"
+    if variante in VARIANT_COLOR_MAP:
+        return variante
+    key = str(variante).strip().lower()
+    return LEGACY_VARIANT_MAP.get(key, "Normal")
 
 
 # Base de datos y persistencia de usuario en AppData/Local/PokeBinder

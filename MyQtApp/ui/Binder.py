@@ -20,7 +20,7 @@ from ..app.price_updater import (
     PRICE_SOURCE_ORDER,
 )
 from MyQtApp.i18n import t, language_manager
-from MyQtApp.ui.CardWidget import CardZoomOverlay, VariantBadgeButton, LanguageBadgeLabel
+from MyQtApp.ui.CardWidget import CardZoomOverlay, VariantBadgeButton, LanguageBadgeLabel, InfoIconLabel
 from MyQtApp.ui.BinderCoverWidget import BinderCoverWidget, BINDER_DESIGNS, resolve_design_key
 from MyQtApp.ui.BinderBookAnimations import (
     BinderSpreadFrame,
@@ -173,6 +173,8 @@ class BinderSlot(QLabel):
         self.drag_start_position = QPoint()
         self.variant_badge = None
         self.lang_badge = None
+        self.info_btn = None
+        self.carta_obj = None
         
         self.setFixedSize(slot_w, slot_h)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -253,11 +255,12 @@ class BinderSlot(QLabel):
             """)
             self.clear()
 
-    def set_card(self, id_api, nombre_archivo, pixmap, idioma=None, variante="Normal", animate_insert=False):
+    def set_card(self, id_api, nombre_archivo, pixmap, idioma=None, variante="Normal", carta=None, animate_insert=False):
         self.id_api = id_api
         self.nombre_archivo = nombre_archivo
         self.idioma = idioma
         self.variante = variante or "Normal"
+        self.carta_obj = carta
         self.selected = False
         scaled_pix = None
         if pixmap:
@@ -267,7 +270,7 @@ class BinderSlot(QLabel):
                 Qt.TransformationMode.SmoothTransformation
             )
             self.setPixmap(scaled_pix)
-        
+
         # Botón vertical de variante (arriba a la izquierda)
         if not self.variant_badge:
             self.variant_badge = VariantBadgeButton(self.id_api, self.variante, self)
@@ -275,10 +278,15 @@ class BinderSlot(QLabel):
         else:
             self.variant_badge.id_api = self.id_api
             self.variant_badge.set_variante(self.variante)
-
         self.variant_badge.move(3, 3)
-        self.variant_badge.show()
-        self.variant_badge.raise_()
+
+        # Burbuja de información de la carta (arriba a la derecha, Issue #17)
+        if self.info_btn:
+            self.info_btn.deleteLater()
+            self.info_btn = None
+        if carta is not None:
+            self.info_btn = InfoIconLabel(carta, self)
+            self.info_btn.move(self.slot_w - 26, 3)
 
         # Insignia de idioma (abajo a la izquierda)
         if self.idioma:
@@ -286,14 +294,12 @@ class BinderSlot(QLabel):
                 self.lang_badge = LanguageBadgeLabel(self.idioma, self)
             else:
                 self.lang_badge.setText(self.idioma)
-            
             bh = self.lang_badge.height()
             self.lang_badge.move(3, self.slot_h - bh - 3)
-            self.lang_badge.show()
-            self.lang_badge.raise_()
         elif self.lang_badge:
             self.lang_badge.hide()
 
+        self.apply_details_visibility()
         self.update_style()
 
         # Animación táctil de inserción en mica (Card Slide-In) al soltar carta
@@ -309,11 +315,30 @@ class BinderSlot(QLabel):
                 self._slide_overlay = overlay
                 def _on_slide_done():
                     self._slide_overlay = None
-                    if self.variant_badge and self.variant_badge.isVisible():
-                        self.variant_badge.raise_()
-                    if self.lang_badge and self.lang_badge.isVisible():
-                        self.lang_badge.raise_()
+                    self.apply_details_visibility()
                 overlay.animation_finished.connect(_on_slide_done)
+
+    def apply_details_visibility(self):
+        """Muestra u oculta variante, burbuja de info e idioma según el toggle 'Ver detalles' (Issue #17)."""
+        show_details = bool(self.id_api and getattr(self.binder_view, "show_card_details", False))
+        if self.variant_badge:
+            if show_details:
+                self.variant_badge.show()
+                self.variant_badge.raise_()
+            else:
+                self.variant_badge.hide()
+        if self.info_btn:
+            if show_details:
+                self.info_btn.show()
+                self.info_btn.raise_()
+            else:
+                self.info_btn.hide()
+        if self.lang_badge:
+            if show_details and self.idioma:
+                self.lang_badge.show()
+                self.lang_badge.raise_()
+            else:
+                self.lang_badge.hide()
 
     def _on_slot_variant_changed(self, id_api, nueva_variante):
         self.variante = nueva_variante
@@ -325,9 +350,12 @@ class BinderSlot(QLabel):
         self.nombre_archivo = None
         self.idioma = None
         self.variante = "Normal"
+        self.carta_obj = None
         self.selected = False
         if self.variant_badge:
             self.variant_badge.hide()
+        if self.info_btn:
+            self.info_btn.hide()
         if self.lang_badge:
             self.lang_badge.hide()
         self.clear()
@@ -797,6 +825,7 @@ class BinderView(QWidget):
         self._active_open_overlay = None
         self._drag_turn_state = None
         self._folder_cover_widgets = {}
+        self.show_card_details = False
         
         self.load_binder_data()
         
@@ -999,6 +1028,25 @@ class BinderView(QWidget):
 
         right_layout.addWidget(self.binder_price_bar)
 
+        # Barra compacta con botón "Ver detalles" debajo de Valor del Binder (Issue #17, sin emojis)
+        details_row = QHBoxLayout()
+        details_row.setContentsMargins(2, 0, 2, 0)
+        details_row.setSpacing(8)
+
+        self.btn_ver_detalles = QPushButton(t("Ver detalles"))
+        self.btn_ver_detalles.setCheckable(True)
+        self.btn_ver_detalles.setChecked(False)
+        self.btn_ver_detalles.setFixedHeight(26)
+        self.btn_ver_detalles.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_ver_detalles.setToolTip(
+            t("Activa o desactiva la variante, la burbuja de información y el idioma sobre las cartas del binder")
+        )
+        self.btn_ver_detalles.clicked.connect(self.toggle_binder_card_details)
+        self._refresh_ver_detalles_btn_style()
+        details_row.addWidget(self.btn_ver_detalles)
+        details_row.addStretch()
+        right_layout.addLayout(details_row)
+
         # Spread Stack Container (Stacked Widget to allow transition animations)
         self.spread_stack = QStackedWidget()
         right_layout.addWidget(self.spread_stack, 1) # Expand
@@ -1128,6 +1176,55 @@ class BinderView(QWidget):
                 if slot.selected and slot.id_api:
                     slot._on_long_press()
                     return
+
+    def _refresh_ver_detalles_btn_style(self):
+        """Actualiza el texto y estilo del botón 'Ver detalles' según su estado activo (Issue #17)."""
+        if not hasattr(self, "btn_ver_detalles") or not self.btn_ver_detalles:
+            return
+        active = bool(self.show_card_details)
+        self.btn_ver_detalles.setChecked(active)
+        self.btn_ver_detalles.setText(t("Ocultar detalles") if active else t("Ver detalles"))
+        if active:
+            self.btn_ver_detalles.setStyleSheet("""
+                QPushButton {
+                    background-color: #f56b7b;
+                    color: #ffffff;
+                    font-size: 11px;
+                    font-weight: 700;
+                    border: 1.5px solid #d44854;
+                    border-radius: 9px;
+                    padding: 2px 14px;
+                }
+                QPushButton:hover {
+                    background-color: #e05263;
+                }
+            """)
+        else:
+            self.btn_ver_detalles.setStyleSheet("""
+                QPushButton {
+                    background-color: #ffffff;
+                    color: #5a2a3a;
+                    font-size: 11px;
+                    font-weight: 700;
+                    border: 1.5px solid #f2b8c3;
+                    border-radius: 9px;
+                    padding: 2px 14px;
+                }
+                QPushButton:hover {
+                    background-color: #ffdfe6;
+                    border-color: #f56b7b;
+                }
+            """)
+
+    def toggle_binder_card_details(self):
+        """Alterna la visibilidad de variante, burbuja de info e idioma en todas las cartas del binder."""
+        self.show_card_details = not self.show_card_details
+        self._refresh_ver_detalles_btn_style()
+        for page in (self.page_left, self.page_right):
+            if not page:
+                continue
+            for slot in page.slots:
+                slot.apply_details_visibility()
 
     def mostrar_vista_carpetas(self, animate_close=False):
         """Muestra la vista de catálogo/selección de carpetas, con animación 3D de cierre al volver."""
@@ -2621,7 +2718,7 @@ class BinderView(QWidget):
                             if not pixmap or pixmap.isNull():
                                 pixmap = get_card_placeholder_pixmap((cfg["card_w"], cfg["card_h"]), nombre)
 
-                            slot.set_card(card_id, nombre_archivo, pixmap, idioma=c_lang, variante=card_var)
+                            slot.set_card(card_id, nombre_archivo, pixmap, idioma=c_lang, variante=card_var, carta=carta)
         finally:
             session.close()
 
@@ -2710,7 +2807,7 @@ class BinderView(QWidget):
                                 pixmap = QPixmap(ruta_alt)
                         if not pixmap or pixmap.isNull():
                             pixmap = get_card_placeholder_pixmap((cfg["card_w"], cfg["card_h"]), carta.nombre)
-                        slot.set_card(card_id, n_archivo, pixmap, idioma=c_lang, variante=variante, animate_insert=True)
+                        slot.set_card(card_id, n_archivo, pixmap, idioma=c_lang, variante=variante, carta=carta, animate_insert=True)
                 finally:
                     session.close()
 

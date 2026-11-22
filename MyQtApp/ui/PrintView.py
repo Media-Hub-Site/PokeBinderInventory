@@ -1,31 +1,34 @@
+import json
 import os
 import re
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QComboBox,
     QPushButton, QSpinBox, QCheckBox, QScrollArea, QGridLayout, QFrame,
-    QFileDialog, QDialog, QTextEdit, QDialogButtonBox, QMessageBox, QListWidget, QListWidgetItem
+    QFileDialog, QDialog, QTextEdit, QDialogButtonBox, QMessageBox
 )
 from PyQt6.QtGui import QPixmap, QPdfWriter, QPainter, QPageSize, QPageLayout, QPen, QColor, QFont
-from PyQt6.QtCore import Qt, QMarginsF, QRectF, QSizeF, pyqtSignal
+from PyQt6.QtCore import Qt, QMarginsF, QRectF, pyqtSignal
+from sqlalchemy import and_, func
 
 from MyQtApp.session import SessionLocal
-from MyQtApp.models import Cartas, Mazo, MazoCarta
-from MyQtApp.config import IMAGES_DIR, IMAGES_WEBP_DIR
+from MyQtApp.models import Cartas, Mazo, MazoCarta, UsuarioCarta
+from MyQtApp.config import IMAGES_DIR, IMAGES_WEBP_DIR, BINDER_DATA_FILE
 from MyQtApp.app.getImgs import get_webp_pixmap, get_pixmap_from_zip, get_hd_pixmap
-from MyQtApp.i18n import t, language_manager
+from MyQtApp.app.db_services import obtener_categorias_usuario
+from MyQtApp.i18n import t
 from MyQtApp.ui.toast import show_toast
 
 
 class ImportDecklistDialog(QDialog):
-    """Diálogo para pegar e importar un mazo en formato texto (ej. '4 Pikachu SVI 63' o '4 Miraidon')."""
+    """Diálogo para pegar e importar una lista de cartas en formato texto (ej. '4 Pikachu SVI 63' o '4 Miraidon')."""
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle(t("Importar Mazo"))
+        self.setWindowTitle(t("Importar desde Texto"))
         self.resize(480, 360)
 
         layout = QVBoxLayout(self)
 
-        lbl = QLabel(t("Pega tu lista de mazo aquí (ejemplo: '4 Pikachu' o '4 Pikachu SVI 063'):"), self)
+        lbl = QLabel(t("Pega tu lista de cartas aquí (ejemplo: '4 Pikachu' o '4 Pikachu SVI 063'):"), self)
         lbl.setWordWrap(True)
         lbl.setStyleSheet("font-weight: bold; color: #f8fafc;")
         layout.addWidget(lbl)
@@ -56,11 +59,11 @@ class ImportDecklistDialog(QDialog):
 class PrintCardItemWidget(QFrame):
     """Widget que representa una carta en la cola de impresión con miniatura y controles de cantidad."""
     quantity_changed = pyqtSignal()
-    removed = pyqtSignal(str) # card_key
+    removed = pyqtSignal(str)  # card_key
 
     def __init__(self, card_data, quantity=1, parent=None):
         super().__init__(parent)
-        self.card_data = card_data # dict with id_api, nombre, idioma, edition
+        self.card_data = card_data  # dict with id_api, nombre, idioma, edition
         self.card_key = f"{card_data.get('id_api')}:{card_data.get('idioma', 'es')}"
 
         self.setFrameShape(QFrame.Shape.StyledPanel)
@@ -95,9 +98,9 @@ class PrintCardItemWidget(QFrame):
         if pix:
             self.lbl_img.setPixmap(pix)
         else:
-            self.lbl_img.setText("🎴")
+            self.lbl_img.setText("TCG")
             self.lbl_img.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.lbl_img.setStyleSheet("background: #1e293b; color: #94a3b8; border-radius: 4px;")
+            self.lbl_img.setStyleSheet("background: #1e293b; color: #94a3b8; font-weight: bold; font-size: 11px; border-radius: 4px;")
 
         layout.addWidget(self.lbl_img)
 
@@ -154,15 +157,16 @@ class PrintCardItemWidget(QFrame):
             QPushButton:hover { background: #475569; }
         """)
 
-        btn_del = QPushButton("❌", self)
+        btn_del = QPushButton("X", self)
         btn_del.setFixedSize(28, 28)
         btn_del.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_del.setToolTip(t("Eliminar"))
         btn_del.setStyleSheet("""
             QPushButton {
-                background: rgba(239, 68, 68, 0.2); color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.4); border-radius: 6px;
+                background: rgba(239, 68, 68, 0.2); color: #ef4444; font-weight: bold;
+                border: 1px solid rgba(239, 68, 68, 0.4); border-radius: 6px;
             }
-            QPushButton:hover { background: rgba(239, 68, 68, 0.4); }
+            QPushButton:hover { background: rgba(239, 68, 68, 0.4); color: white; }
         """)
 
         btn_minus.clicked.connect(self.decrement)
@@ -191,39 +195,39 @@ class PrintCardItemWidget(QFrame):
 
 
 class PrintView(QWidget):
-    """Sección de impresión de proxys en PDF basada en Mazos."""
+    """Sección de impresión de proxies en PDF desde Mazos, Colección, Carpetas de Colección o Binders."""
     def __init__(self, usuario="admin", parent=None):
         super().__init__(parent)
         self.usuario = usuario
         self.session = SessionLocal()
-        self.queue_items = {} # dict mapping card_key -> PrintCardItemWidget
+        self.queue_items = {}  # dict mapping card_key -> PrintCardItemWidget
 
         self.init_ui()
 
     def showEvent(self, event):
         super().showEvent(event)
-        self.refrescar_mazos_combo()
+        self.refrescar_items_origen()
 
     def init_ui(self):
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(12, 12, 12, 12)
         main_layout.setSpacing(12)
 
-        # ── Columna Izquierda: Selección de Mazo, Configuración y Acciones ──
+        # ── Columna Izquierda: Selección de Origen, Configuración y Acciones ──
         left_panel = QWidget(self)
         left_panel.setFixedWidth(340)
         left_layout = QVBoxLayout(left_panel)
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(12)
 
-        # Título
-        lbl_title = QLabel("🖨️ " + t("Imprimir Proxies"), self)
+        # Título (sin emojis)
+        lbl_title = QLabel(t("Imprimir Proxies"), self)
         lbl_title.setStyleSheet("font-size: 18px; font-weight: bold; color: #38bdf8;")
         left_layout.addWidget(lbl_title)
 
-        # 1. Buscador y Selector de Mazos Creados
-        deck_box = QWidget(self)
-        deck_box.setStyleSheet("""
+        # 1. Selector de Origen (Mazos, Colección, Carpetas de Colección, Binders)
+        source_box = QWidget(self)
+        source_box.setStyleSheet("""
             QWidget {
                 background-color: rgba(15, 23, 42, 0.7);
                 border: 1px solid rgba(56, 189, 248, 0.3);
@@ -231,45 +235,59 @@ class PrintView(QWidget):
                 padding: 10px;
             }
         """)
-        deck_vbox = QVBoxLayout(deck_box)
-        deck_vbox.setSpacing(8)
+        source_vbox = QVBoxLayout(source_box)
+        source_vbox.setSpacing(8)
 
-        lbl_deck = QLabel("🃏 " + t("Seleccionar Mazo para Imprimir"), self)
-        lbl_deck.setStyleSheet("font-weight: bold; font-size: 12px; color: #f8fafc;")
-        deck_vbox.addWidget(lbl_deck)
+        lbl_source = QLabel(t("Seleccionar para Imprimir"), self)
+        lbl_source.setStyleSheet("font-weight: bold; font-size: 12px; color: #f8fafc; border: none; padding: 0;")
+        source_vbox.addWidget(lbl_source)
 
-        self.combo_mazos = QComboBox(self)
-        self.combo_mazos.setStyleSheet("""
+        combo_style = """
             QComboBox {
-                background-color: #0f172a; color: white; border: 1px solid #334155; border-radius: 6px; padding: 8px;
+                background-color: #0f172a; color: white; border: 1px solid #334155; border-radius: 6px; padding: 7px 8px;
             }
             QComboBox:focus { border-color: #38bdf8; }
-        """)
-        deck_vbox.addWidget(self.combo_mazos)
+        """
 
-        btn_load_deck = QPushButton("📥 " + t("Cargar Mazo a la Cola"), self)
-        btn_load_deck.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_load_deck.setStyleSheet("""
+        self.combo_origen_tipo = QComboBox(self)
+        self.combo_origen_tipo.addItem(t("Mazos"), "mazo")
+        self.combo_origen_tipo.addItem(t("Colección"), "coleccion")
+        self.combo_origen_tipo.addItem(t("Carpetas de Colección"), "carpeta_coleccion")
+        self.combo_origen_tipo.addItem(t("Binders"), "binder")
+        self.combo_origen_tipo.setStyleSheet(combo_style)
+        self.combo_origen_tipo.currentIndexChanged.connect(self.refrescar_items_origen)
+        source_vbox.addWidget(self.combo_origen_tipo)
+
+        self.combo_origen_item = QComboBox(self)
+        self.combo_origen_item.setStyleSheet(combo_style)
+        source_vbox.addWidget(self.combo_origen_item)
+
+        # Alias retrocompatible por si alguna referencia externa consulta combo_mazos
+        self.combo_mazos = self.combo_origen_item
+
+        btn_load_source = QPushButton(t("Cargar a la Cola"), self)
+        btn_load_source.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_load_source.setStyleSheet("""
             QPushButton {
                 background-color: #0284c7; color: white; font-weight: bold; border-radius: 6px; padding: 10px; font-size: 13px;
             }
             QPushButton:hover { background-color: #0369a1; }
         """)
-        btn_load_deck.clicked.connect(self.cargar_mazo_seleccionado_a_cola)
-        deck_vbox.addWidget(btn_load_deck)
+        btn_load_source.clicked.connect(self.cargar_origen_seleccionado_a_cola)
+        source_vbox.addWidget(btn_load_source)
 
-        btn_import_deck = QPushButton("📋 " + t("Importar Mazo desde Texto"), self)
-        btn_import_deck.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_import_deck.setStyleSheet("""
+        btn_import_text = QPushButton(t("Importar desde Texto"), self)
+        btn_import_text.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_import_text.setStyleSheet("""
             QPushButton {
                 background-color: #334155; color: #e2e8f0; font-weight: bold; border-radius: 6px; padding: 8px;
             }
             QPushButton:hover { background-color: #475569; }
         """)
-        btn_import_deck.clicked.connect(self.abrir_dialogo_importar_mazo)
-        deck_vbox.addWidget(btn_import_deck)
+        btn_import_text.clicked.connect(self.abrir_dialogo_importar_mazo)
+        source_vbox.addWidget(btn_import_text)
 
-        left_layout.addWidget(deck_box)
+        left_layout.addWidget(source_box)
 
         # 2. Opciones de PDF y formato de impresión
         config_box = QWidget(self)
@@ -284,14 +302,14 @@ class PrintView(QWidget):
         config_vbox = QVBoxLayout(config_box)
         config_vbox.setSpacing(8)
 
-        lbl_cfg_title = QLabel("⚙️ " + t("Ajustes de PDF"), self)
-        lbl_cfg_title.setStyleSheet("font-weight: bold; font-size: 12px; color: #38bdf8;")
+        lbl_cfg_title = QLabel(t("Ajustes de PDF"), self)
+        lbl_cfg_title.setStyleSheet("font-weight: bold; font-size: 12px; color: #38bdf8; border: none; padding: 0;")
         config_vbox.addWidget(lbl_cfg_title)
 
         # Tamaño de papel
         row_paper = QHBoxLayout()
         lbl_paper = QLabel(t("Tamaño de papel") + ":", self)
-        lbl_paper.setStyleSheet("color: #cbd5e1; font-size: 11px;")
+        lbl_paper.setStyleSheet("color: #cbd5e1; font-size: 11px; border: none; padding: 0;")
         self.combo_paper = QComboBox(self)
         self.combo_paper.addItems(["A4 (210 x 297 mm)", "Letter (215.9 x 279.4 mm)"])
         self.combo_paper.setStyleSheet("background: #0f172a; color: white; border-radius: 4px; padding: 3px;")
@@ -302,7 +320,7 @@ class PrintView(QWidget):
         # Medidas de cartas
         row_card_size = QHBoxLayout()
         lbl_csize = QLabel(t("Medidas de carta") + ":", self)
-        lbl_csize.setStyleSheet("color: #cbd5e1; font-size: 11px;")
+        lbl_csize.setStyleSheet("color: #cbd5e1; font-size: 11px; border: none; padding: 0;")
         self.combo_card_size = QComboBox(self)
         self.combo_card_size.addItems(["Standard TCG (63 x 88 mm)", "Japanese Size (59 x 86 mm)"])
         self.combo_card_size.setStyleSheet("background: #0f172a; color: white; border-radius: 4px; padding: 3px;")
@@ -313,13 +331,13 @@ class PrintView(QWidget):
         # Marcas de corte
         self.chk_crop_marks = QCheckBox(t("Marcas de corte"), self)
         self.chk_crop_marks.setChecked(True)
-        self.chk_crop_marks.setStyleSheet("color: #e2e8f0; font-size: 11px;")
+        self.chk_crop_marks.setStyleSheet("color: #e2e8f0; font-size: 11px; border: none; padding: 0;")
         config_vbox.addWidget(self.chk_crop_marks)
 
         # Espaciado
         self.chk_spacing = QCheckBox(t("Espacio entre cartas") + " (1mm)", self)
         self.chk_spacing.setChecked(False)
-        self.chk_spacing.setStyleSheet("color: #e2e8f0; font-size: 11px;")
+        self.chk_spacing.setStyleSheet("color: #e2e8f0; font-size: 11px; border: none; padding: 0;")
         config_vbox.addWidget(self.chk_spacing)
 
         left_layout.addWidget(config_box)
@@ -335,7 +353,6 @@ class PrintView(QWidget):
         self.btn_generate_pdf.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_generate_pdf.setStyleSheet("""
             QPushButton {
-                background: linear-gradient(135deg, #10b981, #059669);
                 background-color: #10b981;
                 color: white;
                 font-size: 15px;
@@ -353,9 +370,10 @@ class PrintView(QWidget):
         btn_clear.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_clear.setStyleSheet("""
             QPushButton {
-                background: rgba(239, 68, 68, 0.2); color: #ef4444; font-weight: bold; border: 1px solid rgba(239, 68, 68, 0.4); border-radius: 8px; padding: 6px;
+                background: rgba(239, 68, 68, 0.2); color: #ef4444; font-weight: bold;
+                border: 1px solid rgba(239, 68, 68, 0.4); border-radius: 8px; padding: 6px;
             }
-            QPushButton:hover { background: rgba(239, 68, 68, 0.4); }
+            QPushButton:hover { background: rgba(239, 68, 68, 0.4); color: white; }
         """)
         btn_clear.clicked.connect(self.limpiar_cola)
         left_layout.addWidget(btn_clear)
@@ -369,7 +387,7 @@ class PrintView(QWidget):
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(8)
 
-        lbl_queue_header = QLabel("📋 " + t("Cola de Impresión"), self)
+        lbl_queue_header = QLabel(t("Cola de Impresión"), self)
         lbl_queue_header.setStyleSheet("font-size: 16px; font-weight: bold; color: #f8fafc;")
         right_layout.addWidget(lbl_queue_header)
 
@@ -394,40 +412,184 @@ class PrintView(QWidget):
 
         main_layout.addWidget(right_panel, stretch=1)
 
-        self.refrescar_mazos_combo()
+        self.refrescar_items_origen()
         self.actualizar_estadisticas()
 
-    def refrescar_mazos_combo(self):
-        self.combo_mazos.clear()
-        mazos = self.session.query(Mazo).filter(Mazo.usuario_nombre == self.usuario).all()
+    def _load_user_binders(self) -> dict:
+        if not os.path.exists(BINDER_DATA_FILE):
+            return {}
+        try:
+            with open(BINDER_DATA_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            user_data = data.get(self.usuario, {})
+            if isinstance(user_data, dict):
+                return user_data.get("folders", {})
+        except Exception as e:
+            print(f"Error leyendo binders para PrintView: {e}")
+        return {}
 
-        if not mazos:
-            self.combo_mazos.addItem(t("Sin mazos creados"), None)
-        else:
-            for m in mazos:
-                total_qty = sum(mc.cantidad for mc in m.cartas)
-                self.combo_mazos.addItem(f"🃏 {m.nombre} ({total_qty} cartas)", m.id)
+    def refrescar_mazos_combo(self):
+        """Alias retrocompatible."""
+        self.refrescar_items_origen()
+
+    def refrescar_items_origen(self):
+        """Actualiza el combo secundario según el tipo de origen elegido (Mazos, Colección, Carpetas o Binders)."""
+        self.combo_origen_item.clear()
+        self.session.expire_all()
+        tipo = self.combo_origen_tipo.currentData()
+
+        if tipo == "mazo":
+            mazos = self.session.query(Mazo).filter(Mazo.usuario_nombre == self.usuario).all()
+            if not mazos:
+                self.combo_origen_item.addItem(t("Sin mazos creados"), None)
+            else:
+                for m in mazos:
+                    total_qty = sum(mc.cantidad for mc in m.cartas)
+                    self.combo_origen_item.addItem(f"{m.nombre} ({total_qty} cartas)", m.id)
+
+        elif tipo == "coleccion":
+            total_col = (
+                self.session.query(UsuarioCarta)
+                .filter(UsuarioCarta.usuario_nombre == self.usuario)
+                .count()
+            )
+            if total_col == 0:
+                self.combo_origen_item.addItem(t("Colección vacía"), None)
+            else:
+                self.combo_origen_item.addItem(f"{t('Toda mi Colección')} ({total_col} cartas)", "__ALL__")
+
+        elif tipo == "carpeta_coleccion":
+            cats = obtener_categorias_usuario(self.usuario)
+            if not cats:
+                self.combo_origen_item.addItem(t("Sin carpetas de colección"), None)
+            else:
+                for cat in cats:
+                    cnt = (
+                        self.session.query(UsuarioCarta)
+                        .filter(
+                            UsuarioCarta.usuario_nombre == self.usuario,
+                            UsuarioCarta.categoria == cat,
+                        )
+                        .count()
+                    )
+                    self.combo_origen_item.addItem(f"{cat} ({cnt} cartas)", cat)
+
+        elif tipo == "binder":
+            binders = self._load_user_binders()
+            if not binders:
+                self.combo_origen_item.addItem(t("Sin binders creados"), None)
+            else:
+                for f_id, f_data in binders.items():
+                    name = f_data.get("name", f_id)
+                    mode = f_data.get("mode", "3x3")
+                    cards_dict = f_data.get("cards", {}).get(mode, {})
+                    self.combo_origen_item.addItem(f"{name} ({len(cards_dict)} cartas)", f_id)
 
     def cargar_mazo_seleccionado_a_cola(self):
-        mazo_id = self.combo_mazos.currentData()
-        if not mazo_id:
-            show_toast("No hay mazo seleccionado.", "warning", 2000)
+        """Alias retrocompatible."""
+        self.cargar_origen_seleccionado_a_cola()
+
+    def cargar_origen_seleccionado_a_cola(self):
+        tipo = self.combo_origen_tipo.currentData()
+        item_val = self.combo_origen_item.currentData()
+        if item_val is None:
+            show_toast("No hay ningún elemento seleccionado para cargar.", "warning", 2000)
             return
 
-        mazo = self.session.query(Mazo).filter(Mazo.id == mazo_id).first()
-        if not mazo or not mazo.cartas:
-            show_toast("El mazo seleccionado está vacío.", "warning", 2000)
-            return
+        agregadas = 0
+        etiqueta = self.combo_origen_item.currentText()
 
-        for mc in mazo.cartas:
-            self.agregar_carta_a_cola({
-                "id_api": mc.id_api,
-                "nombre": mc.nombre_carta,
-                "idioma": mc.idioma,
-                "edition": mc.edition or ""
-            }, quantity=mc.cantidad)
+        if tipo == "mazo":
+            mazo = self.session.query(Mazo).filter(Mazo.id == item_val).first()
+            if not mazo or not mazo.cartas:
+                show_toast("El mazo seleccionado está vacío.", "warning", 2000)
+                return
+            for mc in mazo.cartas:
+                self.agregar_carta_a_cola({
+                    "id_api": mc.id_api,
+                    "nombre": mc.nombre_carta,
+                    "idioma": mc.idioma,
+                    "edition": mc.edition or ""
+                }, quantity=mc.cantidad)
+                agregadas += mc.cantidad
+            etiqueta = mazo.nombre
 
-        show_toast(f"✔️ Mazo '{mazo.nombre}' cargado a la cola.", "success", 2500)
+        elif tipo in ("coleccion", "carpeta_coleccion"):
+            q = (
+                self.session.query(Cartas, UsuarioCarta)
+                .join(
+                    UsuarioCarta,
+                    and_(
+                        Cartas.id_api == UsuarioCarta.carta_id,
+                        func.coalesce(Cartas.idioma, "es") == func.coalesce(UsuarioCarta.idioma, "es"),
+                    ),
+                )
+                .filter(UsuarioCarta.usuario_nombre == self.usuario)
+            )
+            if tipo == "carpeta_coleccion":
+                q = q.filter(UsuarioCarta.categoria == item_val)
+
+            rows = q.all()
+            if not rows:
+                show_toast("No se encontraron cartas en la selección.", "warning", 2000)
+                return
+
+            for carta, _uc in rows:
+                self.agregar_carta_a_cola({
+                    "id_api": carta.id_api,
+                    "nombre": carta.nombre,
+                    "idioma": carta.idioma or "es",
+                    "edition": carta.edition or "",
+                }, quantity=1)
+                agregadas += 1
+
+        elif tipo == "binder":
+            binders = self._load_user_binders()
+            f_data = binders.get(item_val)
+            if not f_data:
+                show_toast("No se encontró el binder seleccionado.", "warning", 2000)
+                return
+            mode = f_data.get("mode", "3x3")
+            cards_dict = f_data.get("cards", {}).get(mode, {})
+            if not cards_dict:
+                show_toast("El binder seleccionado está vacío.", "warning", 2000)
+                return
+
+            for slot_val in cards_dict.values():
+                cid = None
+                lang = "en"
+                if isinstance(slot_val, dict):
+                    cid = slot_val.get("id_api")
+                    lang = slot_val.get("idioma", "en")
+                elif isinstance(slot_val, str) and slot_val:
+                    if ":" in slot_val:
+                        cid, lang = slot_val.split(":", 1)
+                    else:
+                        cid = slot_val
+                if not cid:
+                    continue
+
+                carta = (
+                    self.session.query(Cartas)
+                    .filter(Cartas.id_api == cid, Cartas.idioma == lang)
+                    .first()
+                )
+                if not carta:
+                    carta = self.session.query(Cartas).filter(Cartas.id_api == cid).first()
+                if carta:
+                    self.agregar_carta_a_cola({
+                        "id_api": carta.id_api,
+                        "nombre": carta.nombre,
+                        "idioma": carta.idioma or lang,
+                        "edition": carta.edition or "",
+                    }, quantity=1)
+                    agregadas += 1
+            etiqueta = f_data.get("name", etiqueta)
+
+        if agregadas > 0:
+            show_toast(f"'{etiqueta}' cargado a la cola ({agregadas} cartas).", "success", 2500)
+        else:
+            show_toast("No se encontraron cartas para cargar.", "warning", 2000)
 
     def agregar_carta_a_cola(self, card_data, quantity=1):
         card_key = f"{card_data.get('id_api')}:{card_data.get('idioma', 'es')}"
@@ -498,9 +660,9 @@ class PrintView(QWidget):
                     agregadas += qty
 
             if agregadas > 0:
-                show_toast(f"✔️ Se agregaron {agregadas} cartas a la cola.", "success", 2500)
+                show_toast(f"Se agregaron {agregadas} cartas a la cola.", "success", 2500)
             else:
-                QMessageBox.warning(self, "Importar Mazo", "No se encontraron coincidencias para la lista.")
+                QMessageBox.warning(self, t("Importar desde Texto"), "No se encontraron coincidencias para la lista.")
 
     def actualizar_estadisticas(self):
         total_cards = sum(widget.get_quantity() for widget in self.queue_items.values())
@@ -624,11 +786,11 @@ class PrintView(QWidget):
 
             painter.end()
 
-            show_toast("✔️ PDF generado con éxito.", "success", 3500)
+            show_toast("PDF generado con éxito.", "success", 3500)
             QMessageBox.information(
                 self,
                 "PDF Creado",
-                f"El archivo PDF se ha generado correctamente en:\n{file_path}\n\n¡Listo para imprimir a 100% de escala!"
+                f"El archivo PDF se ha generado correctamente en:\n{file_path}\n\nListo para imprimir a 100% de escala."
             )
 
         except Exception as e:

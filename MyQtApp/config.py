@@ -232,6 +232,16 @@ def apply_global_style(app):
     except Exception as e:
         print(f"Error applying stylesheet: {e}")
 
+MUSIC_TRACK_NAMES = {
+    1: "Calum Bowen - Everything's Gonna Be Okay",
+    2: "Tsundere Twintails - Morning Alarm",
+    3: "Pokemón - Lake",
+    4: "Kokonoku - 1:21 Pm",
+    5: "2010 Toyota Corolla",
+    6: "Dosbomb. - Meow.",
+    7: "Ryo Aratani - Neko Atsume no Theme",
+}
+
 def get_music_track_path(pista: int) -> str:
     """Retorna la ruta completa al archivo de música de la pista dada, probando extensiones mp3, m4a, wav, ogg."""
     for ext in [".mp3", ".m4a", ".wav", ".ogg"]:

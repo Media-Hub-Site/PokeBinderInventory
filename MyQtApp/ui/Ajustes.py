@@ -9,7 +9,7 @@ import os
 import hashlib
 from MyQtApp.config import (
     STYLE_FILE, STYLE_DARK_FILE, load_settings, save_settings,
-    DEFAULT_SETTINGS, get_available_music_tracks, PROJECT_ROOT,
+    DEFAULT_SETTINGS, get_available_music_tracks, MUSIC_TRACK_NAMES, PROJECT_ROOT,
     BUNDLE_DIR, EXE_DIR, ICONS_DIR, PERFIL_DIR
 )
 from MyQtApp.i18n import t, language_manager
@@ -848,12 +848,16 @@ class PokeBinderInfoDialog(QDialog):
             "de mercado por carta y calcular el valor acumulado de tu colección y binders."
         )
 
-        tracks = get_available_music_tracks()
-        tracks_str = ", ".join(f"Pista {n}" for n in tracks) if tracks else "Pista 1, Pista 2, Pista 3"
+        track_items = [
+            f"• <b>Pista {n}</b>: {MUSIC_TRACK_NAMES.get(n, f'Pista {n}')}"
+            for n in range(1, 8)
+        ]
+        track_list_html = "<br>".join(track_items)
         _add_card(
             "Música y Efectos de Sonido",
-            f"• <b>Pistas musicales de fondo disponibles</b>: {tracks_str} (ubicadas en <i>assets/sounds</i>, "
-            "seleccionables y regulables desde la sección Audio en Ajustes).<br>"
+            "<b>Pistas de música de fondo disponibles:</b><br>"
+            f"{track_list_html}<br><br>"
+            "<i>(Seleccionables y regulables desde la sección Audio en Ajustes).</i><br><br>"
             "• <b>Efectos interactivos</b>: sonido de cambio de página y apertura de binder/portamazos "
             "(<i>paginas.wav</i>), inserción de cartas y clics (<i>click.wav</i>) y retroalimentación de botones (<i>hover.wav</i>)."
         )
@@ -1081,6 +1085,11 @@ class AjustesWidget(QWidget):
             btn = QPushButton(str(i))
             btn.setFixedSize(36, 36)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            track_name = MUSIC_TRACK_NAMES.get(i)
+            if track_name:
+                btn.setToolTip(f"Pista {i}: {track_name}")
+            else:
+                btn.setToolTip(f"Pista {i}")
             btn.setStyleSheet(CIRCLE_ACTIVE if i == current_track else CIRCLE_BASE)
             btn.setProperty("track_num", i)
             btn.clicked.connect(lambda checked=False, n=i: self.select_music_track(n))

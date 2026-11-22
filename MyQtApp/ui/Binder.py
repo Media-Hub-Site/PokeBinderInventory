@@ -1019,7 +1019,7 @@ class BinderView(QWidget):
         self.binder_prices_pills_layout.setSpacing(8)
         price_bar_layout.addWidget(self.binder_prices_pills_container, 1)
 
-        self.btn_sync_binder_prices = QPushButton(t("Cotizar APIs"))
+        self.btn_sync_binder_prices = QPushButton(t("Cotizar Mercado"))
         self.btn_sync_binder_prices.setFixedHeight(26)
         self.btn_sync_binder_prices.setProperty("class", "pill")
         self.btn_sync_binder_prices.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -1578,7 +1578,7 @@ class BinderView(QWidget):
         else:
             base_usd = res["base_total_usd"]
             pill = QLabel(f"Mercado Base = ${base_usd:,.2f} USD")
-            pill.setToolTip(t("Presiona 'Cotizar APIs' para comparar precios entre TCGPlayer, Cardmarket y PokemonTCG"))
+            pill.setToolTip(t("Presiona 'Cotizar Mercado' para comparar precios entre TCGPlayer, Cardmarket y PokemonTCG"))
             pill.setStyleSheet(
                 "background-color: #fff0f3; color: #703043; border: 1px solid #f2a7b7; "
                 "border-radius: 8px; padding: 3px 10px; font-size: 11px; font-weight: bold;"
@@ -1611,13 +1611,13 @@ class BinderView(QWidget):
 
     def _on_binder_prices_synced(self, actualizadas: int):
         self.btn_sync_binder_prices.setEnabled(True)
-        self.btn_sync_binder_prices.setText(t("Cotizar APIs"))
+        self.btn_sync_binder_prices.setText(t("Cotizar Mercado"))
         self.actualizar_resumen_precios_binder()
         show_toast(f"Precios del binder actualizados ({actualizadas} cartas)", "info")
 
     def _on_binder_prices_error(self, err_msg: str):
         self.btn_sync_binder_prices.setEnabled(True)
-        self.btn_sync_binder_prices.setText(t("Cotizar APIs"))
+        self.btn_sync_binder_prices.setText(t("Cotizar Mercado"))
         show_toast(f"Error al cotizar carpeta: {err_msg}", "error")
 
     def render_folders_grid(self):

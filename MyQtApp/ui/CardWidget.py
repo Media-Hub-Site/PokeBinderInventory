@@ -1009,7 +1009,7 @@ class CardDetailDialog(QDialog):
         right_layout.setSpacing(10)
 
         header_row = QHBoxLayout()
-        lbl_p_title = QLabel(t("Comparación de Precios por API"))
+        lbl_p_title = QLabel(t("Comparación de Precios de Mercado"))
         lbl_p_title.setStyleSheet("font-size: 15px; font-weight: bold; color: #5a2a3a;")
         header_row.addWidget(lbl_p_title)
         header_row.addStretch()
@@ -1188,7 +1188,7 @@ class CardDetailDialog(QDialog):
         if self.price_thread and self.price_thread.isRunning():
             return
         self.btn_refresh.setEnabled(False)
-        self.lbl_status.setText(t("Consultando APIs en vivo..."))
+        self.lbl_status.setText(t("Consultando mercados en vivo..."))
 
         self.price_thread = SingleCardPriceThread(
             self.id_api,
@@ -1205,7 +1205,7 @@ class CardDetailDialog(QDialog):
     def _on_prices_loaded(self, returned_id: str, precios: dict):
         self.btn_refresh.setEnabled(True)
         if precios:
-            self.lbl_status.setText(f"{len(precios)} APIs actualizadas")
+            self.lbl_status.setText(f"{len(precios)} mercados actualizados")
             merged = obtener_precios_carta_bd(self.id_api)
             merged.update(precios)
             self.render_prices(merged)
@@ -1344,7 +1344,7 @@ class InfoIconLabel(QLabel):
                 {"<tr><td style='color: #94a3b8; padding-right: 10px;'><b>" + lbl_esp + ":</b></td><td style='color: #f8fafc;'>" + especial + "</td></tr>" if especial not in ("Normal", "N/A", "Ninguno") else ""}
                 {"<tr><td style='color: #94a3b8; padding-right: 10px;'><b>" + lbl_ent + ":</b></td><td style='color: #f8fafc;'>" + entrenador + "</td></tr>" if entrenador not in ("Desconocido", "N/A", "Ninguno") else ""}
                 {"<tr><td style='color: #94a3b8; padding-right: 10px;'><b>" + lbl_edi + ":</b></td><td style='color: #f8fafc;'>" + edicion + "</td></tr>" if edicion not in ("Ninguno", "N/A") else ""}
-                <tr><td colspan="2" style="border-top: 1px solid #334155; padding-top: 4px; color: #38bdf8; font-size: 11px; font-weight: bold;">Precios por Mercado / API</td></tr>
+                <tr><td colspan="2" style="border-top: 1px solid #334155; padding-top: 4px; color: #38bdf8; font-size: 11px; font-weight: bold;">Precios de Mercado</td></tr>
                 {price_rows_html}
             </table>
             <div style="font-size: 10px; color: #94a3b8; margin-top: 6px; border-top: 1px solid #1e293b; padding-top: 4px;">

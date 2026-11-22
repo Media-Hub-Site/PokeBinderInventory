@@ -19,6 +19,12 @@ from MyQtApp.i18n import t
 from MyQtApp.ui.toast import show_toast
 
 
+def _plain_label(text: str) -> str:
+    """Elimina emojis/símbolos pictográficos que pudieran venir de traducciones heredadas."""
+    cleaned = re.sub(r"[\U00010000-\U0010ffff\u2600-\u27bf\ufe0f]+", "", str(text or ""))
+    return " ".join(cleaned.split())
+
+
 class ImportDecklistDialog(QDialog):
     """Diálogo para pegar e importar una lista de cartas en formato texto (ej. '4 Pikachu SVI 63' o '4 Miraidon')."""
     def __init__(self, parent=None):
@@ -244,16 +250,36 @@ class PrintView(QWidget):
 
         combo_style = """
             QComboBox {
-                background-color: #0f172a; color: white; border: 1px solid #334155; border-radius: 6px; padding: 7px 8px;
+                background-color: #0f172a;
+                color: #ffffff;
+                border: 1px solid #334155;
+                border-radius: 6px;
+                padding: 7px 8px;
             }
             QComboBox:focus { border-color: #38bdf8; }
+            QComboBox QAbstractItemView {
+                background-color: #0f172a;
+                color: #ffffff;
+                selection-background-color: #0284c7;
+                selection-color: #ffffff;
+                border: 1px solid #38bdf8;
+                outline: none;
+            }
+            QComboBox QAbstractItemView::item {
+                color: #ffffff;
+                padding: 6px 8px;
+            }
+            QComboBox QAbstractItemView::item:selected {
+                background-color: #0284c7;
+                color: #ffffff;
+            }
         """
 
         self.combo_origen_tipo = QComboBox(self)
-        self.combo_origen_tipo.addItem(t("Mazos"), "mazo")
-        self.combo_origen_tipo.addItem(t("Colección"), "coleccion")
-        self.combo_origen_tipo.addItem(t("Carpetas de Colección"), "carpeta_coleccion")
-        self.combo_origen_tipo.addItem(t("Binders"), "binder")
+        self.combo_origen_tipo.addItem(_plain_label(t("Mazos")), "mazo")
+        self.combo_origen_tipo.addItem(_plain_label(t("Colección")), "coleccion")
+        self.combo_origen_tipo.addItem(_plain_label(t("Carpetas de Colección")), "carpeta_coleccion")
+        self.combo_origen_tipo.addItem(_plain_label(t("Binders")), "binder")
         self.combo_origen_tipo.setStyleSheet(combo_style)
         self.combo_origen_tipo.currentIndexChanged.connect(self.refrescar_items_origen)
         source_vbox.addWidget(self.combo_origen_tipo)
@@ -265,7 +291,7 @@ class PrintView(QWidget):
         # Alias retrocompatible por si alguna referencia externa consulta combo_mazos
         self.combo_mazos = self.combo_origen_item
 
-        btn_load_source = QPushButton(t("Cargar a la Cola"), self)
+        btn_load_source = QPushButton(_plain_label(t("Cargar a la Cola")), self)
         btn_load_source.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_load_source.setStyleSheet("""
             QPushButton {
@@ -276,11 +302,11 @@ class PrintView(QWidget):
         btn_load_source.clicked.connect(self.cargar_origen_seleccionado_a_cola)
         source_vbox.addWidget(btn_load_source)
 
-        btn_import_text = QPushButton(t("Importar desde Texto"), self)
+        btn_import_text = QPushButton(_plain_label(t("Importar desde Texto")), self)
         btn_import_text.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_import_text.setStyleSheet("""
             QPushButton {
-                background-color: #334155; color: #e2e8f0; font-weight: bold; border-radius: 6px; padding: 8px;
+                background-color: #334155; color: #ffffff; font-weight: bold; border-radius: 6px; padding: 8px;
             }
             QPushButton:hover { background-color: #475569; }
         """)
@@ -302,42 +328,54 @@ class PrintView(QWidget):
         config_vbox = QVBoxLayout(config_box)
         config_vbox.setSpacing(8)
 
-        lbl_cfg_title = QLabel(t("Ajustes de PDF"), self)
+        lbl_cfg_title = QLabel(_plain_label(t("Ajustes de PDF")), self)
         lbl_cfg_title.setStyleSheet("font-weight: bold; font-size: 12px; color: #38bdf8; border: none; padding: 0;")
         config_vbox.addWidget(lbl_cfg_title)
 
+        combo_small_style = """
+            QComboBox {
+                background-color: #0f172a; color: #ffffff; border: 1px solid #334155; border-radius: 4px; padding: 4px 6px;
+            }
+            QComboBox QAbstractItemView {
+                background-color: #0f172a; color: #ffffff;
+                selection-background-color: #0284c7; selection-color: #ffffff;
+                border: 1px solid #38bdf8;
+            }
+            QComboBox QAbstractItemView::item { color: #ffffff; padding: 5px 8px; }
+        """
+
         # Tamaño de papel
         row_paper = QHBoxLayout()
-        lbl_paper = QLabel(t("Tamaño de papel") + ":", self)
-        lbl_paper.setStyleSheet("color: #cbd5e1; font-size: 11px; border: none; padding: 0;")
+        lbl_paper = QLabel(_plain_label(t("Tamaño de papel")) + ":", self)
+        lbl_paper.setStyleSheet("color: #ffffff; font-size: 11px; border: none; padding: 0;")
         self.combo_paper = QComboBox(self)
         self.combo_paper.addItems(["A4 (210 x 297 mm)", "Letter (215.9 x 279.4 mm)"])
-        self.combo_paper.setStyleSheet("background: #0f172a; color: white; border-radius: 4px; padding: 3px;")
+        self.combo_paper.setStyleSheet(combo_small_style)
         row_paper.addWidget(lbl_paper)
         row_paper.addWidget(self.combo_paper)
         config_vbox.addLayout(row_paper)
 
         # Medidas de cartas
         row_card_size = QHBoxLayout()
-        lbl_csize = QLabel(t("Medidas de carta") + ":", self)
-        lbl_csize.setStyleSheet("color: #cbd5e1; font-size: 11px; border: none; padding: 0;")
+        lbl_csize = QLabel(_plain_label(t("Medidas de carta")) + ":", self)
+        lbl_csize.setStyleSheet("color: #ffffff; font-size: 11px; border: none; padding: 0;")
         self.combo_card_size = QComboBox(self)
         self.combo_card_size.addItems(["Standard TCG (63 x 88 mm)", "Japanese Size (59 x 86 mm)"])
-        self.combo_card_size.setStyleSheet("background: #0f172a; color: white; border-radius: 4px; padding: 3px;")
+        self.combo_card_size.setStyleSheet(combo_small_style)
         row_card_size.addWidget(lbl_csize)
         row_card_size.addWidget(self.combo_card_size)
         config_vbox.addLayout(row_card_size)
 
         # Marcas de corte
-        self.chk_crop_marks = QCheckBox(t("Marcas de corte"), self)
+        self.chk_crop_marks = QCheckBox(_plain_label(t("Marcas de corte")), self)
         self.chk_crop_marks.setChecked(True)
-        self.chk_crop_marks.setStyleSheet("color: #e2e8f0; font-size: 11px; border: none; padding: 0;")
+        self.chk_crop_marks.setStyleSheet("color: #ffffff; font-size: 11px; border: none; padding: 0;")
         config_vbox.addWidget(self.chk_crop_marks)
 
         # Espaciado
-        self.chk_spacing = QCheckBox(t("Espacio entre cartas") + " (1mm)", self)
+        self.chk_spacing = QCheckBox(_plain_label(t("Espacio entre cartas")) + " (1mm)", self)
         self.chk_spacing.setChecked(False)
-        self.chk_spacing.setStyleSheet("color: #e2e8f0; font-size: 11px; border: none; padding: 0;")
+        self.chk_spacing.setStyleSheet("color: #ffffff; font-size: 11px; border: none; padding: 0;")
         config_vbox.addWidget(self.chk_spacing)
 
         left_layout.addWidget(config_box)
@@ -348,7 +386,7 @@ class PrintView(QWidget):
         left_layout.addWidget(self.lbl_stats)
 
         # Botón de Generación de PDF
-        self.btn_generate_pdf = QPushButton(t("Generar PDF"), self)
+        self.btn_generate_pdf = QPushButton(_plain_label(t("Generar PDF")), self)
         self.btn_generate_pdf.setFixedSize(340, 46)
         self.btn_generate_pdf.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_generate_pdf.setStyleSheet("""
@@ -366,7 +404,7 @@ class PrintView(QWidget):
         self.btn_generate_pdf.clicked.connect(self.generar_pdf)
         left_layout.addWidget(self.btn_generate_pdf)
 
-        btn_clear = QPushButton(t("Limpiar Cola"), self)
+        btn_clear = QPushButton(_plain_label(t("Limpiar Cola")), self)
         btn_clear.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_clear.setStyleSheet("""
             QPushButton {
@@ -387,8 +425,11 @@ class PrintView(QWidget):
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(8)
 
-        lbl_queue_header = QLabel(t("Cola de Impresión"), self)
-        lbl_queue_header.setStyleSheet("font-size: 16px; font-weight: bold; color: #f8fafc;")
+        lbl_queue_header = QLabel(_plain_label(t("Cola de Impresión")), self)
+        lbl_queue_header.setStyleSheet(
+            "font-size: 16px; font-weight: bold; color: #ffffff; "
+            "background-color: rgba(15, 23, 42, 0.85); border-radius: 8px; padding: 6px 12px;"
+        )
         right_layout.addWidget(lbl_queue_header)
 
         self.scroll_area = QScrollArea(self)

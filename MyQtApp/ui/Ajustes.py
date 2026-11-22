@@ -742,6 +742,159 @@ class RestoreBackupDialog(QDialog):
             self.accept()
 
 
+class PokeBinderInfoDialog(QDialog):
+    """Ventana informativa con estética de PokeBinder sobre APIs, mercados, música y almacenamiento local."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(t("Información de PokeBinder"))
+        self.resize(620, 560)
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #fff5f7;
+            }
+            QScrollArea {
+                background: transparent;
+                border: none;
+            }
+            QFrame#InfoSectionCard {
+                background-color: #ffffff;
+                border: 1.5px solid #f2c4ce;
+                border-radius: 14px;
+            }
+            QLabel#InfoTitle {
+                font-size: 19px;
+                font-weight: 800;
+                color: #a3364a;
+            }
+            QLabel#InfoSubtitle {
+                font-size: 12px;
+                color: #7a4b58;
+            }
+            QLabel#CardHeading {
+                font-size: 13px;
+                font-weight: 700;
+                color: #a3364a;
+                border: none;
+                background: transparent;
+            }
+            QLabel#CardBody {
+                font-size: 12px;
+                color: #3f2730;
+                line-height: 1.45;
+                border: none;
+                background: transparent;
+            }
+        """)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(20, 18, 20, 16)
+        outer.setSpacing(12)
+
+        lbl_title = QLabel("Información de PokeBinder")
+        lbl_title.setObjectName("InfoTitle")
+        outer.addWidget(lbl_title)
+
+        lbl_sub = QLabel("Detalles técnicos, fuentes de mercado, audio y privacidad de tu colección.")
+        lbl_sub.setObjectName("InfoSubtitle")
+        outer.addWidget(lbl_sub)
+
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        content = QWidget()
+        content.setStyleSheet("background: transparent;")
+        vbox = QVBoxLayout(content)
+        vbox.setContentsMargins(0, 2, 6, 4)
+        vbox.setSpacing(10)
+
+        def _add_card(heading: str, body_html: str):
+            card = QFrame()
+            card.setObjectName("InfoSectionCard")
+            cl = QVBoxLayout(card)
+            cl.setContentsMargins(14, 12, 14, 12)
+            cl.setSpacing(6)
+            h = QLabel(heading)
+            h.setObjectName("CardHeading")
+            cl.addWidget(h)
+            b = QLabel(body_html)
+            b.setObjectName("CardBody")
+            b.setWordWrap(True)
+            b.setTextFormat(Qt.TextFormat.RichText)
+            cl.addWidget(b)
+            vbox.addWidget(card)
+
+        _add_card(
+            "¿Qué es una API? (en términos sencillos)",
+            "Una <b>API</b> (Interfaz de Programación de Aplicaciones) funciona como un <b>puente digital</b> "
+            "o mensajero automático entre PokeBinder y servidores especializados de cartas Pokémon.<br><br>"
+            "Cuando consultas una carta o actualizas su precio, la app envía una solicitud rápida por internet "
+            "y recibe al instante la imagen oficial y los valores actualizados del mercado, sin que tengas "
+            "que buscarlos manualmente página por página."
+        )
+
+        _add_card(
+            "Fuentes de Cartas e Imágenes",
+            "• <b>TCGdex API</b> (api.tcgdex.net): catálogo multilingüe (Español, Inglés, Japonés, Francés, "
+            "Portugués y Chino Tradicional) e imágenes optimizadas en formato .webp.<br>"
+            "• <b>Pokémon TCG CDN</b> (images.pokemontcg.io): fuente de respaldo automática para asegurar "
+            "que las más de 95.000 cartas del catálogo muestren su arte correctamente."
+        )
+
+        _add_card(
+            "Fuentes de Precios de Mercado",
+            "• <b>TCGPlayer</b>: precios de mercado de referencia en dólares estadounidenses (USD).<br>"
+            "• <b>Cardmarket</b>: precios del mercado europeo en euros (EUR), con conversión automática en vivo a USD.<br>"
+            "• <b>Pokémon TCG API y TCGCSV</b>: fuentes complementarias utilizadas para contrastar valores "
+            "de mercado por carta y calcular el valor acumulado de tu colección y binders."
+        )
+
+        tracks = get_available_music_tracks()
+        tracks_str = ", ".join(f"Pista {n}" for n in tracks) if tracks else "Pista 1, Pista 2, Pista 3"
+        _add_card(
+            "Música y Efectos de Sonido",
+            f"• <b>Pistas musicales de fondo disponibles</b>: {tracks_str} (ubicadas en <i>assets/sounds</i>, "
+            "seleccionables y regulables desde la sección Audio en Ajustes).<br>"
+            "• <b>Efectos interactivos</b>: sonido de cambio de página y apertura de binder/portamazos "
+            "(<i>paginas.wav</i>), inserción de cartas y clics (<i>click.wav</i>) y retroalimentación de botones (<i>hover.wav</i>)."
+        )
+
+        _add_card(
+            "Almacenamiento Local y Copias de Seguridad",
+            "<b>Cada cuenta es local por dispositivo.</b><br><br>"
+            "Tu sesión, colección de cartas, carpetas, binders 3D, mazos, portamazos personalizados y ajustes "
+            "se guardan exclusivamente en tu propio computador (dentro de <i>%LOCALAPPDATA%\\PokeBinder</i>) "
+            "y no se suben automáticamente a ningún servidor externo.<br><br>"
+            "Si deseas llevar tu progreso a otro computador o guardarlo en Google Drive o un disco duro, "
+            "utiliza el botón <b>Exportar datos</b> en la parte inferior de Ajustes. Luego podrás recuperarlo "
+            "en cualquier sesión nueva mediante <b>Importar copia de seguridad</b>."
+        )
+
+        vbox.addStretch()
+        scroll.setWidget(content)
+        outer.addWidget(scroll, 1)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        btn_close = QPushButton(t("Cerrar"))
+        btn_close.setFixedHeight(34)
+        btn_close.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_close.setStyleSheet("""
+            QPushButton {
+                background-color: #f56b7b;
+                color: #ffffff;
+                font-weight: 700;
+                font-size: 12px;
+                border: 1.5px solid #d44854;
+                border-radius: 10px;
+                padding: 4px 24px;
+            }
+            QPushButton:hover { background-color: #e05263; }
+        """)
+        btn_close.clicked.connect(self.accept)
+        btn_row.addWidget(btn_close)
+        outer.addLayout(btn_row)
+
+
 class AjustesWidget(QWidget):
     """Pantalla de ajustes (UI, lógica de temas, y señales de cambio de estado)."""
 
@@ -768,11 +921,37 @@ class AjustesWidget(QWidget):
         root.setContentsMargins(24, 20, 24, 20)
         root.setSpacing(14)
 
-        # ───── Título ──────────────────────────────────────────────────────────
+        # ───── Título + Botón "Información de PokeBinder" ──────────────────────
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
         self.title_lbl = QLabel(f"⚙️  {t('Ajustes')}")
         self.title_lbl.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
         self.title_lbl.setStyleSheet("color: #a3364a;")
-        root.addWidget(self.title_lbl)
+        title_row.addWidget(self.title_lbl)
+        title_row.addStretch()
+
+        self.btn_info_app = QPushButton(t("Información de PokeBinder"))
+        self.btn_info_app.setFixedHeight(34)
+        self.btn_info_app.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_info_app.setStyleSheet("""
+            QPushButton {
+                background-color: #ffffff;
+                color: #a3364a;
+                font-size: 12px;
+                font-weight: 700;
+                border: 1.5px solid #f29ca4;
+                border-radius: 10px;
+                padding: 4px 16px;
+            }
+            QPushButton:hover {
+                background-color: #f7a8b8;
+                color: #ffffff;
+                border-color: #f56b7b;
+            }
+        """)
+        self.btn_info_app.clicked.connect(self.abrir_info_pokebinder)
+        title_row.addWidget(self.btn_info_app)
+        root.addLayout(title_row)
 
         # ───── Sección 0: Perfil de Usuario ────────────────────────────────────
         if self.usuario:
@@ -1045,14 +1224,18 @@ class AjustesWidget(QWidget):
         footer.addWidget(self.btn_logout)
         footer.addStretch()
 
+        self.btn_export_portable = QPushButton(t("Exportar datos"))
+        self.btn_import_portable = QPushButton(t("Importar copia de seguridad"))
         self.btn_rest = QPushButton(f"↩️ {t('Restaurar valores')}")
         self.btn_save = QPushButton(f"💾 {t('Guardar')}")
-        for b in (self.btn_rest, self.btn_save):
+        for b in (self.btn_export_portable, self.btn_import_portable, self.btn_rest, self.btn_save):
             b.setProperty("class", "pill")
             b.setFixedHeight(36)
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             footer.addWidget(b)
 
+        self.btn_export_portable.clicked.connect(self.exportar_datos_portables)
+        self.btn_import_portable.clicked.connect(self.importar_copia_portable)
         self.btn_rest.clicked.connect(self.restaurar_valores)
         self.btn_save.clicked.connect(self.guardar_valores)
 
@@ -1341,3 +1524,113 @@ class AjustesWidget(QWidget):
     def guardar_valores(self):
         save_settings(self.settings)
         QMessageBox.information(self, t("Ajustes Guardados"), t("Mensaje Guardado"))
+
+    def abrir_info_pokebinder(self):
+        """Abre la ventana informativa de PokeBinder (APIs, mercados, música y almacenamiento local)."""
+        dlg = PokeBinderInfoDialog(self)
+        dlg.exec()
+
+    def exportar_datos_portables(self):
+        """Exporta colección, carpetas, binders, mazos, portamazos 3D y ajustes a un archivo .zip portable."""
+        if not self.usuario:
+            QMessageBox.warning(self, t("Exportar datos"), "No hay una sesión de usuario activa.")
+            return
+
+        from datetime import datetime
+        from MyQtApp.app.portable_backup import export_user_backup_zip
+
+        stamp = datetime.now().strftime("%Y%m%d_%H%M")
+        default_name = os.path.join(
+            os.path.expanduser("~/Desktop"),
+            f"PokeBinder_Respaldo_{self.usuario}_{stamp}.zip",
+        )
+        zip_path, _ = QFileDialog.getSaveFileName(
+            self,
+            t("Exportar datos de PokeBinder"),
+            default_name,
+            "Copia de seguridad PokeBinder (*.zip)",
+        )
+        if not zip_path:
+            return
+        if not zip_path.lower().endswith(".zip"):
+            zip_path += ".zip"
+
+        try:
+            counts = export_user_backup_zip(self.usuario, zip_path)
+            QMessageBox.information(
+                self,
+                t("Exportación completada"),
+                (
+                    f"Tus datos fueron exportados correctamente en:\n{zip_path}\n\n"
+                    f"• Cartas en colección: {counts['collection_cards']}\n"
+                    f"• Carpetas de colección: {counts['collection_folders']}\n"
+                    f"• Binders: {counts['binders']}\n"
+                    f"• Mazos / Portamazos: {counts['decks']}\n\n"
+                    "Puedes guardar este archivo en Google Drive, un pendrive o disco duro."
+                ),
+            )
+        except Exception as e:
+            QMessageBox.critical(self, t("Error al exportar"), f"No se pudo crear el archivo de respaldo:\n{e}")
+
+    def importar_copia_portable(self):
+        """Importa una copia de seguridad portable (.zip) en la sesión actual del usuario."""
+        if not self.usuario:
+            QMessageBox.warning(self, t("Importar copia de seguridad"), "No hay una sesión de usuario activa.")
+            return
+
+        from MyQtApp.app.portable_backup import import_user_backup_zip
+
+        zip_path, _ = QFileDialog.getOpenFileName(
+            self,
+            t("Importar copia de seguridad de PokeBinder"),
+            os.path.expanduser("~/Desktop"),
+            "Copia de seguridad PokeBinder (*.zip)",
+        )
+        if not zip_path:
+            return
+
+        reply = QMessageBox.question(
+            self,
+            t("Confirmar importación"),
+            (
+                f"¿Deseas importar la copia de seguridad en la sesión actual ('{self.usuario}')?\n\n"
+                "Se restaurarán tus cartas de colección, carpetas, binders, mazos y diseños de portamazos "
+                "sin borrar el catálogo global."
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        try:
+            counts = import_user_backup_zip(self.usuario, zip_path)
+            # Refrescar vistas principales si existen en la ventana padre
+            win = self.window()
+            if win:
+                for attr, method in (
+                    ("inventario_widget", "actualizar_galeria"),
+                    ("inventario_widget", "cargar_categorias_combo"),
+                    ("binder_widget", "load_binder_data"),
+                    ("binder_widget", "render_folders_grid"),
+                    ("mazos_widget", "cargar_mazos"),
+                ):
+                    sub = getattr(win, attr, None)
+                    if sub and hasattr(sub, method):
+                        try:
+                            getattr(sub, method)()
+                        except Exception:
+                            pass
+
+            QMessageBox.information(
+                self,
+                t("Copia de seguridad importada"),
+                (
+                    f"Datos restaurados correctamente en tu cuenta '{self.usuario}':\n\n"
+                    f"• Cartas agregadas a colección: {counts['collection_cards']}\n"
+                    f"• Carpetas restauradas: {counts['collection_folders']}\n"
+                    f"• Binders restaurados: {counts['binders']}\n"
+                    f"• Mazos / Portamazos restaurados: {counts['decks']}"
+                ),
+            )
+        except Exception as e:
+            QMessageBox.critical(self, t("Error al importar"), f"No se pudo importar la copia de seguridad:\n{e}")

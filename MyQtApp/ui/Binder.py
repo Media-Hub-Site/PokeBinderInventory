@@ -994,6 +994,7 @@ class BinderPage(QWidget):
 
 class BinderView(QWidget):
     open_binder_in_print_requested = pyqtSignal(str, str)  # (folder_id, mode: "print" | "csv")
+    inside_binder_changed = pyqtSignal(bool)
 
     def __init__(self, usuario, parent=None):
         super().__init__(parent)
@@ -1044,9 +1045,18 @@ class BinderView(QWidget):
         self.setup_binder_pages_view()
         self.main_stack.addWidget(self.binder_pages_widget)
 
+        self.main_stack.currentChanged.connect(self._on_main_stack_changed)
+
         # Mostrar carpetas inicialmente
         self.mostrar_vista_carpetas()
         language_manager.language_changed.connect(self.retranslate_ui)
+
+    def is_inside_binder(self) -> bool:
+        """Indica si actualmente se está visualizando el interior de una carpeta."""
+        return self.main_stack.currentWidget() == self.binder_pages_widget
+
+    def _on_main_stack_changed(self, index: int):
+        self.inside_binder_changed.emit(self.is_inside_binder())
 
     def setup_folders_view(self):
         """Configura la vista inicial de binders del usuario (limpia y sin emojis)."""

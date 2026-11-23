@@ -255,6 +255,8 @@ class MainWindow(QWidget):
         binder_view = self.paginas.widget(1)
         if hasattr(binder_view, 'open_binder_in_print_requested'):
             binder_view.open_binder_in_print_requested.connect(self.abrir_binder_en_print)
+        if hasattr(binder_view, 'inside_binder_changed'):
+            binder_view.inside_binder_changed.connect(self.on_binder_inside_changed)
 
         self.actualizar_botones_secundarios(0)
 
@@ -381,12 +383,25 @@ class MainWindow(QWidget):
                 btn.style().unpolish(btn)
                 btn.style().polish(btn)
 
+    def on_binder_inside_changed(self, is_inside: bool):
+        """Actualiza la visibilidad de Vaciar según si estamos dentro o fuera de una carpeta."""
+        if self.paginas.currentIndex() == 1:
+            self.btn_vaciar.setVisible(is_inside)
+
     def actualizar_botones_secundarios(self, indice):
         try:
             self._update_nav_active_state(indice)
             self.btn_agregar.setVisible(indice == 0)
             self.btn_eliminar.setVisible(indice == 2)
-            self.btn_vaciar.setVisible(indice == 1)
+            
+            # El botón vaciar solo debe aparecer dentro de una carpeta del binder
+            is_inside_binder = False
+            if indice == 1:
+                binder_w = self.paginas.widget(1)
+                if hasattr(binder_w, 'is_inside_binder'):
+                    is_inside_binder = binder_w.is_inside_binder()
+            self.btn_vaciar.setVisible(is_inside_binder)
+
             if hasattr(self, 'variant_legend_sidebar') and self.variant_legend_sidebar:
                 self.variant_legend_sidebar.setVisible(indice in (1, 2))
         except Exception as e:

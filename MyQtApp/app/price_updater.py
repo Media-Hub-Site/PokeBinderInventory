@@ -472,6 +472,7 @@ def fetch_multi_api_prices(
     number: str = None,
     include_tcgcsv: bool = True,
     save_to_db: bool = True,
+    cancel_check=None,
 ) -> dict:
     """
     Consulta múltiples APIs de Pokémon TCG en vivo para una carta:
@@ -483,6 +484,9 @@ def fetch_multi_api_prices(
     if not id_api:
         return {}
 
+    def _cancelled() -> bool:
+        return bool(cancel_check and cancel_check())
+
     precios = {}
     lang_code = normalize_lang_code(idioma)
     tcgdex_lang = TCGDEX_LANG_MAP.get(lang_code, "en")
@@ -490,6 +494,8 @@ def fetch_multi_api_prices(
     # 1. TCGdex (provee TCGPlayer gratis y sin clave)
     tcgdex_data = None
     for t_lang in ([tcgdex_lang, "en"] if tcgdex_lang != "en" else ["en"]):
+        if _cancelled():
+            return precios
         try:
             r = requests.get(
                 f"https://api.tcgdex.net/v2/{t_lang}/cards/{id_api}",
@@ -511,11 +517,17 @@ def fetch_multi_api_prices(
         except Exception:
             pass
 
+    if _cancelled():
+        return precios
+
     # 1b. TCGMatch (mercado latinoamericano / tcgmatch.cl)
     if card_name:
         tcgm_price = consultar_precio_tcgmatch(card_name, number=number, set_name=set_name)
         if tcgm_price:
             precios["TCGMatch"] = tcgm_price
+
+    if _cancelled():
+        return precios
 
     # 2. Pokémon TCG API (api.pokemontcg.io)
     ptcg_id = tcgdex_to_pokemontcg_id(id_api)
@@ -524,6 +536,8 @@ def fetch_multi_api_prices(
         candidates_ptcg.append(ptcg_id)
 
     for cand_id in candidates_ptcg:
+        if _cancelled():
+            return precios
         try:
             r_ptcg = requests.get(
                 f"https://api.pokemontcg.io/v2/cards/{cand_id}",
@@ -545,6 +559,9 @@ def fetch_multi_api_prices(
                     break
         except Exception:
             continue
+
+    if _cancelled():
+        return precios
 
     # 3. TCGCSV (espejo público diario de TCGplayer)
     if include_tcgcsv and card_name and set_name and set_name not in ("TCGDex", "N/A"):
@@ -578,6 +595,13 @@ class SingleCardPriceThread(QThread):
         self.card_name = card_name
         self.set_name = set_name
         self.number = number
+        self._cancel_event = threading.Event()
+
+    def cancel(self):
+        self._cancel_event.set()
+
+    def is_cancelled(self) -> bool:
+        return self._cancel_event.is_set()
 
     def run(self):
         try:
@@ -589,10 +613,13 @@ class SingleCardPriceThread(QThread):
                 number=self.number,
                 include_tcgcsv=True,
                 save_to_db=True,
+                cancel_check=self._cancel_event.is_set,
             )
-            self.prices_loaded.emit(self.id_api, precios)
+            if not self._cancel_event.is_set():
+                self.prices_loaded.emit(self.id_api, precios)
         except Exception as e:
-            self.error.emit(str(e))
+            if not self._cancel_event.is_set():
+                self.error.emit(str(e))
 
 
 class PriceUpdaterThread(QThread):

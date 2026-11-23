@@ -27,6 +27,26 @@ from MyQtApp.app.price_updater import (
 from MyQtApp.session import SessionLocal
 from MyQtApp.models import Cartas
 
+# Referencias fuertes a QThreads desacoplados en ejecución para evitar
+# "QThread: Destroyed while thread '' is still running" al cerrar diálogos/overlays
+_ACTIVE_BG_THREADS = set()
+
+
+def _track_detached_thread(thread):
+    """Mantiene vivo un QThread sin padre hasta que finalice limpiamente."""
+    if thread is None:
+        return
+    _ACTIVE_BG_THREADS.add(thread)
+
+    def _cleanup():
+        _ACTIVE_BG_THREADS.discard(thread)
+        try:
+            thread.deleteLater()
+        except RuntimeError:
+            pass
+
+    thread.finished.connect(_cleanup)
+
 
 class LanguageBadgeLabel(QLabel):
     """Etiqueta distintiva con el idioma de la carta (ej. ES, EN, JA, FR, PT, ZH)."""
@@ -764,7 +784,7 @@ class CardZoomOverlay(QWidget):
                     id_api, set_id=set_id, number=number, nombre_archivo=nombre_archivo, idioma=card_lang, parent=None
                 )
                 self.hd_thread.image_loaded.connect(self._on_hd_loaded)
-                self.hd_thread.finished.connect(self.hd_thread.deleteLater)
+                _track_detached_thread(self.hd_thread)
                 self.hd_thread.start()
 
     def _on_hd_loaded(self, hd_pixmap: QPixmap, returned_id_api: str):
@@ -1060,7 +1080,7 @@ class CardDetailDialog(QDialog):
             meta_lines.append((t("Etapa"), etapa))
 
         for k, v in meta_lines:
-            row_lbl = QLabel(f"<b>{k}:</b> {v}")
+            row_lbl = QLabel(f"<b>{str(k).rstrip(':')}:</b> {v}")
             row_lbl.setWordWrap(True)
             row_lbl.setStyleSheet("font-size: 11px; color: #6b3b4b;")
             left_layout.addWidget(row_lbl)
@@ -1148,6 +1168,7 @@ class CardDetailDialog(QDialog):
         main_layout.addWidget(right_box, 1)
 
         # Cargar precios guardados en BD y disparar actualización si hay < 2 fuentes
+        self._is_closing = False
         initial_prices = obtener_precios_carta_bd(self.id_api)
         self.render_prices(initial_prices)
         if len(initial_prices) < 2 and self.id_api:
@@ -1252,6 +1273,8 @@ class CardDetailDialog(QDialog):
             self.prices_layout.addWidget(card)
 
     def fetch_live_prices(self):
+        if self._is_closing:
+            return
         if self.price_thread and self.price_thread.isRunning():
             return
         self.btn_refresh.setEnabled(False)
@@ -1263,13 +1286,43 @@ class CardDetailDialog(QDialog):
             card_name=self.nombre,
             set_name=self.set_name,
             number=self.number,
-            parent=self,
+            parent=None,
         )
         self.price_thread.prices_loaded.connect(self._on_prices_loaded)
         self.price_thread.error.connect(self._on_prices_error)
+        _track_detached_thread(self.price_thread)
         self.price_thread.start()
 
+    def _detach_price_thread(self):
+        """Desconecta y cancela el hilo de precios al cerrar el diálogo para evitar crash de QThread."""
+        self._is_closing = True
+        thread = getattr(self, "price_thread", None)
+        if thread is not None:
+            try:
+                thread.prices_loaded.disconnect(self._on_prices_loaded)
+            except Exception:
+                pass
+            try:
+                thread.error.disconnect(self._on_prices_error)
+            except Exception:
+                pass
+            try:
+                thread.cancel()
+            except Exception:
+                pass
+            self.price_thread = None
+
+    def done(self, result):
+        self._detach_price_thread()
+        super().done(result)
+
+    def closeEvent(self, event):
+        self._detach_price_thread()
+        super().closeEvent(event)
+
     def _on_prices_loaded(self, returned_id: str, precios: dict):
+        if self._is_closing:
+            return
         self.btn_refresh.setEnabled(True)
         if precios:
             self.lbl_status.setText(f"{len(precios)} mercados actualizados")
@@ -1281,6 +1334,8 @@ class CardDetailDialog(QDialog):
             self.lbl_status.setText(t("Sin precios nuevos en línea"))
 
     def _on_prices_error(self, err_msg: str):
+        if self._is_closing:
+            return
         self.btn_refresh.setEnabled(True)
         self.lbl_status.setText(t("Error de conexión"))
 

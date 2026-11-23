@@ -1,7 +1,7 @@
 import sys
 import os
 from PyQt6.QtWidgets import QApplication, QWidget, QStackedWidget, QVBoxLayout, QGraphicsOpacityEffect
-from PyQt6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QRect, QParallelAnimationGroup, pyqtProperty
+from PyQt6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QRect, QParallelAnimationGroup, pyqtProperty, QTimer
 from MyQtApp.ui.Login import LoginWindow
 from MyQtApp.ui.Index import MainWindow
 from MyQtApp.models import Base
@@ -57,22 +57,46 @@ class AppWindow(QWidget):
         w = int(self._start_w + (self._end_w - self._start_w) * val)
         h = int(self._start_h + (self._end_h - self._start_h) * val)
         
-        # Centrar relativo a la pantalla donde se encuentra actualmente la ventana
-        screen_obj = self.screen()
-        if screen_obj is None:
-            screen_obj = QApplication.primaryScreen()
+        # Centrar el marco completo de la ventana en el área disponible de la pantalla actual
+        screen_obj = self.screen() or QApplication.primaryScreen()
         screen = screen_obj.availableGeometry()
-        x = screen.x() + (screen.width() - w) // 2
-        y = screen.y() + (screen.height() - h) // 2
-        self.setGeometry(x, y, w, h)
+        fg = self.frameGeometry()
+        extra_w = max(0, fg.width() - self.width())
+        extra_h = max(0, fg.height() - self.height())
+        self.resize(w, h)
+        x = screen.x() + max(0, (screen.width() - (w + extra_w)) // 2)
+        y = screen.y() + max(0, (screen.height() - (h + extra_h)) // 2)
+        self.move(x, y)
+
+    def center_on_screen(self):
+        """Centra exactamente la ventana (incluyendo bordes y barra de título) en la pantalla actual."""
+        screen_obj = self.screen() or QApplication.primaryScreen()
+        if not screen_obj:
+            return
+        avail = screen_obj.availableGeometry()
+        if self.layout():
+            self.layout().activate()
+        fg = self.frameGeometry()
+        extra_w = max(0, fg.width() - self.width())
+        extra_h = max(0, fg.height() - self.height())
+        max_w = max(self.minimumWidth(), avail.width() - extra_w)
+        max_h = max(self.minimumHeight(), avail.height() - extra_h)
+        target_w = min(self.width(), max_w)
+        target_h = min(self.height(), max_h)
+        if target_w != self.width() or target_h != self.height():
+            self.resize(target_w, target_h)
+            fg = self.frameGeometry()
+        x = avail.x() + max(0, (avail.width() - fg.width()) // 2)
+        y = avail.y() + max(0, (avail.height() - fg.height()) // 2)
+        self.move(x, y)
 
     def get_centered_geometry(self, width, height):
         screen_obj = self.screen()
         if screen_obj is None:
             screen_obj = QApplication.primaryScreen()
         screen = screen_obj.availableGeometry()
-        x = screen.x() + (screen.width() - width) // 2
-        y = screen.y() + (screen.height() - height) // 2
+        x = screen.x() + max(0, (screen.width() - width) // 2)
+        y = screen.y() + max(0, (screen.height() - height) // 2)
         return QRect(x, y, width, height)
 
     def resizeEvent(self, event):
@@ -84,16 +108,26 @@ class AppWindow(QWidget):
         self.setMinimumSize(0, 0)
         self.setMaximumSize(16777215, 16777215)
 
-        # Crear la ventana principal
+        # Crear la ventana principal (se agregará al stack al finalizar el fade-in para evitar saltos bruscos)
         self.main_window = MainWindow(username)
-        
-        # Conectar el logout de MainWindow de vuelta al stack
         self.main_window.logout_requested.connect(self.on_logout_requested)
-        
-        self.stack.addWidget(self.main_window)
 
-        # Ejecutar la transición de flash blanco con redimensionamiento animado a 1000x650
-        self.ejecutar_transicion_flash(nuevo_indice=1, target_w=1000, target_h=650)
+        # Calcular tamaño objetivo acorde al tamaño real requerido por MainWindow y al monitor
+        screen_obj = self.screen() or QApplication.primaryScreen()
+        avail = screen_obj.availableGeometry()
+        fg = self.frameGeometry()
+        extra_w = max(16, fg.width() - self.width())
+        extra_h = max(39, fg.height() - self.height())
+        if self.main_window.layout():
+            self.main_window.layout().activate()
+        hint = self.main_window.minimumSizeHint()
+        max_w = max(950, avail.width() - extra_w - 24)
+        max_h = max(600, avail.height() - extra_h - 16)
+        target_w = min(max(1180, hint.width()), max_w)
+        target_h = min(max(780, hint.height()), max_h)
+
+        # Ejecutar la transición de flash blanco con redimensionamiento animado y centrado real
+        self.ejecutar_transicion_flash(nuevo_indice=1, target_w=target_w, target_h=target_h)
 
     def on_logout_requested(self):
         # Desbloquear límites de tamaño temporalmente para la animación
@@ -142,6 +176,9 @@ class AppWindow(QWidget):
         self._trans_group = grupo_in
 
         def al_completar_in():
+            if not destruir_main and getattr(self, "main_window", None) is not None:
+                if self.stack.indexOf(self.main_window) == -1:
+                    self.stack.addWidget(self.main_window)
             self.stack.setCurrentIndex(nuevo_indice)
             if destruir_main:
                 if self.stack.count() > 1:
@@ -155,14 +192,18 @@ class AppWindow(QWidget):
                 if hasattr(self.login_widget, 'load_profiles'):
                     self.login_widget.load_profiles()
             else:
-                # Establecer límites del main window
+                # Establecer límites del main window y re-centrar tras ajustar layout
                 self.setMinimumSize(950, 600)
                 self.setMaximumSize(16777215, 16777215)
-                
+
+            self.center_on_screen()
+            QTimer.singleShot(0, self.center_on_screen)
+            QTimer.singleShot(60, self.center_on_screen)
             self.anim_out.start()
 
         def al_completar_out():
             self.flash_overlay.hide()
+            self.center_on_screen()
             self._trans_group = None
 
         grupo_in.finished.connect(al_completar_in)
@@ -253,6 +294,7 @@ def main():
     window = AppWindow()
     init_global_toast(window)
     window.show()
+    QTimer.singleShot(0, window.center_on_screen)
     sys.exit(app.exec())
 
 

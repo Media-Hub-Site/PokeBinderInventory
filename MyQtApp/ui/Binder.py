@@ -114,6 +114,7 @@ class DraggableCardLabel(QLabel):
                 mime_data.setProperty("source", "inventory")
                 mime_data.setProperty("nombre_archivo", self.nombre_archivo)
                 mime_data.setProperty("idioma", getattr(self, "idioma", "en") or "en")
+                mime_data.setProperty("variante", getattr(self, "variante", "Normal") or "Normal")
                 drag.setMimeData(mime_data)
 
                 # Set drag pixmap
@@ -412,13 +413,15 @@ class BinderSlot(QLabel):
             source_slot = event.mimeData().property("source_slot")
             nombre_archivo = event.mimeData().property("nombre_archivo")
             idioma = event.mimeData().property("idioma")
+            variante = event.mimeData().property("variante") or "Normal"
             
             if card_id:
                 # Tell the main view to handle the drop (update logic and UI)
                 if self.binder_view:
                     self.binder_view.handle_drop(
                         self.page_index, self.slot_index, card_id, 
-                        source_slot=source_slot, nombre_archivo=nombre_archivo, idioma=idioma
+                        source_slot=source_slot, nombre_archivo=nombre_archivo, idioma=idioma,
+                        variante=variante
                     )
                 event.accept()
         except Exception as e:
@@ -449,6 +452,7 @@ class BinderSlot(QLabel):
                 mime_data.setProperty("source_slot", f"{self.page_index}_{self.slot_index}")
                 mime_data.setProperty("nombre_archivo", self.nombre_archivo)
                 mime_data.setProperty("idioma", getattr(self, "idioma", "en") or "en")
+                mime_data.setProperty("variante", getattr(self, "variante", "Normal") or "Normal")
                 drag.setMimeData(mime_data)
                 
                 if self.pixmap() and not self.pixmap().isNull():
@@ -475,6 +479,8 @@ class InventorySidebar(QWidget):
     def __init__(self, usuario, parent=None):
         super().__init__(parent)
         self.usuario = usuario
+        self.coleccion_activa = None  # None = Todas las colecciones
+        self.orden_activo = None      # None | "rarity" | "type" | "idioma"
         self.setAcceptDrops(True)
 
         layout = QVBoxLayout(self)
@@ -518,71 +524,48 @@ class InventorySidebar(QWidget):
         self.buscador.textChanged.connect(lambda: self.timer_busqueda.start())
         layout.addWidget(self.buscador)
 
-        # 2. Botón Filtros (usa clase BinderNavBtn del QSS global)
-        self.btn_toggle_filtros = QPushButton("Filtros")
-        self.btn_toggle_filtros.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_toggle_filtros.setProperty("class", "BinderNavBtn")
-        self.btn_toggle_filtros.clicked.connect(self.toggle_filters_panel)
-        layout.addWidget(self.btn_toggle_filtros)
+        # 2. Botones "Colección" y "Ordenar" con letra oscura de alto contraste (Issue #42)
+        btns_row = QHBoxLayout()
+        btns_row.setContentsMargins(0, 0, 0, 0)
+        btns_row.setSpacing(6)
 
-        # 3. Panel desplegable de filtros
-        self.filters_panel = QWidget()
-        self.filters_panel.setObjectName("binder_filters_panel")
-        self.filters_panel.setStyleSheet("""
-            QWidget#binder_filters_panel {
-                background-color: #fff0f3;
-                border: 1.5px solid #f2c4ce;
-                border-radius: 10px;
-            }
-            QLabel {
+        sidebar_btn_style = """
+            QPushButton {
+                background-color: #ffd6e0;
+                color: #3b1723;
+                border-radius: 9px;
+                padding: 5px 8px;
+                font-weight: 700;
                 font-size: 12px;
-                font-weight: bold;
-                color: #703043;
-                border: none;
-                background: transparent;
+                border: 1.5px solid #e08fa0;
+                min-height: 32px;
             }
-            QComboBox {
-                background-color: white;
-                border: 1.5px solid #f29ca4;
-                border-radius: 8px;
-                padding: 3px 8px;
-                font-size: 12px;
-                min-height: 30px;
+            QPushButton:hover {
+                background-color: #f7a8b8;
+                color: #2b0f18;
+                border-color: #d44854;
             }
-        """)
-        self.filters_panel.setVisible(False)
+            QPushButton:pressed {
+                background-color: #f29ca4;
+                color: #1f0a11;
+            }
+        """
 
-        panel_layout = QVBoxLayout(self.filters_panel)
-        panel_layout.setContentsMargins(10, 10, 10, 10)
-        panel_layout.setSpacing(6)
+        self.btn_coleccion = QPushButton(t("Colección"))
+        self.btn_coleccion.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_coleccion.setStyleSheet(sidebar_btn_style)
+        self._apply_dark_text_button_palette(self.btn_coleccion)
+        self.btn_coleccion.clicked.connect(self._mostrar_menu_coleccion)
+        btns_row.addWidget(self.btn_coleccion, 1)
 
-        self.filtros = {}
-        campos = {
-            "Idioma": "idioma",
-            "Rareza": "rarity",
-            "Tipo": "type",
-            "Edición": "edition",
-            "Etapa": "stage",
-            "Entrenador": "trainer",
-            "Especial": "especial_type"
-        }
+        self.btn_ordenar = QPushButton(t("Ordenar"))
+        self.btn_ordenar.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_ordenar.setStyleSheet(sidebar_btn_style)
+        self._apply_dark_text_button_palette(self.btn_ordenar)
+        self.btn_ordenar.clicked.connect(self._mostrar_menu_ordenar)
+        btns_row.addWidget(self.btn_ordenar, 1)
 
-        for label_text, col_name in campos.items():
-            lbl = QLabel(label_text)
-            panel_layout.addWidget(lbl)
-            combo = QComboBox()
-            combo.addItem("Todos")
-            self.filtros[col_name] = combo
-            panel_layout.addWidget(combo)
-
-        # Botón Aplicar (usa clase pill del QSS global)
-        self.btn_aplicar_filtros = QPushButton("Aplicar Filtros")
-        self.btn_aplicar_filtros.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_aplicar_filtros.setProperty("class", "pill")
-        self.btn_aplicar_filtros.clicked.connect(self.load_cards)
-        panel_layout.addWidget(self.btn_aplicar_filtros)
-
-        layout.addWidget(self.filters_panel)
+        layout.addLayout(btns_row)
 
         # Scroll Area
         self.scroll = QScrollArea()
@@ -591,157 +574,247 @@ class InventorySidebar(QWidget):
 
         self.container = QWidget()
         self.cards_layout = QVBoxLayout(self.container)
+        self.cards_layout.setContentsMargins(4, 6, 4, 6)
         self.cards_layout.setSpacing(12)
         self.cards_layout.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
 
         self.scroll.setWidget(self.container)
         layout.addWidget(self.scroll)
 
-        self.cargar_opciones_filtros()
+        self.load_cards()
+
+    def _apply_dark_text_button_palette(self, btn: QPushButton):
+        from PyQt6.QtGui import QPalette
+        pal = btn.palette()
+        pal.setColor(QPalette.ColorRole.ButtonText, QColor("#3b1723"))
+        pal.setColor(QPalette.ColorRole.WindowText, QColor("#3b1723"))
+        pal.setColor(QPalette.ColorRole.Text, QColor("#3b1723"))
+        btn.setPalette(pal)
+
+    def _create_styled_popup_menu(self) -> QMenu:
+        menu = QMenu(self)
+        menu.setMinimumWidth(165)
+        menu.setMaximumWidth(220)
+        from PyQt6.QtGui import QPalette
+        pal = menu.palette()
+        pal.setColor(QPalette.ColorRole.Window, QColor("#0f172a"))
+        pal.setColor(QPalette.ColorRole.Base, QColor("#0f172a"))
+        pal.setColor(QPalette.ColorRole.WindowText, QColor("#f8fafc"))
+        pal.setColor(QPalette.ColorRole.Text, QColor("#f8fafc"))
+        pal.setColor(QPalette.ColorRole.ButtonText, QColor("#f8fafc"))
+        pal.setColor(QPalette.ColorRole.Highlight, QColor("#e25b70"))
+        pal.setColor(QPalette.ColorRole.HighlightedText, QColor("#ffffff"))
+        menu.setPalette(pal)
+        menu.setStyleSheet("""
+            QMenu {
+                background-color: #0f172a;
+                color: #f8fafc;
+                border: 1.5px solid #f29ca4;
+                border-radius: 8px;
+                padding: 4px;
+                font-size: 12px;
+            }
+            QMenu::item {
+                padding: 6px 16px 6px 10px;
+                border-radius: 5px;
+                color: #f8fafc;
+                background-color: transparent;
+            }
+            QMenu::item:selected {
+                background-color: #e25b70;
+                color: #ffffff;
+            }
+            QMenu::item:checked {
+                font-weight: bold;
+                color: #ffffff;
+                background-color: rgba(242, 156, 164, 0.25);
+            }
+            QMenu::separator {
+                height: 1px;
+                background: #334155;
+                margin: 4px 8px;
+            }
+        """)
+        return menu
+
+    def _mostrar_menu_coleccion(self):
+        """Despliega menú de tamaño prudente para filtrar por una colección creada en específico (Issue #42)."""
+        from MyQtApp.app.db_services import obtener_categorias_usuario
+        cats = obtener_categorias_usuario(self.usuario)
+        if self.coleccion_activa and self.coleccion_activa not in cats:
+            self.coleccion_activa = None
+
+        menu = self._create_styled_popup_menu()
+
+        act_todas = QAction(t("Todas"), menu)
+        act_todas.setCheckable(True)
+        act_todas.setChecked(self.coleccion_activa is None)
+        act_todas.triggered.connect(lambda: self._seleccionar_coleccion_filtro(None))
+        menu.addAction(act_todas)
+
+        if cats:
+            menu.addSeparator()
+            for cat in cats:
+                act_cat = QAction(cat, menu)
+                act_cat.setCheckable(True)
+                act_cat.setChecked(self.coleccion_activa == cat)
+                act_cat.triggered.connect(lambda checked=False, c=cat: self._seleccionar_coleccion_filtro(c))
+                menu.addAction(act_cat)
+
+        menu.exec(self.btn_coleccion.mapToGlobal(QPoint(0, self.btn_coleccion.height() + 2)))
+
+    def _seleccionar_coleccion_filtro(self, coleccion):
+        self.coleccion_activa = coleccion
+        if coleccion:
+            self.btn_coleccion.setToolTip(f"{t('Colección')}: {coleccion}")
+        else:
+            self.btn_coleccion.setToolTip(t("Colección"))
+        self.load_cards()
+
+    def _mostrar_menu_ordenar(self):
+        """Despliega menú para ordenar las cartas por Rareza, Energía e Idioma (Issue #42)."""
+        menu = self._create_styled_popup_menu()
+
+        opciones = [
+            (t("Rareza"), "rarity"),
+            (t("Energía"), "type"),
+            (t("Idioma"), "idioma"),
+        ]
+        for label, key in opciones:
+            act = QAction(label, menu)
+            act.setCheckable(True)
+            act.setChecked(self.orden_activo == key)
+            act.triggered.connect(lambda checked=False, k=key: self._seleccionar_orden(k))
+            menu.addAction(act)
+
+        if self.orden_activo is not None:
+            menu.addSeparator()
+            act_reset = QAction(t("Por defecto"), menu)
+            act_reset.triggered.connect(lambda: self._seleccionar_orden(None))
+            menu.addAction(act_reset)
+
+        menu.exec(self.btn_ordenar.mapToGlobal(QPoint(0, self.btn_ordenar.height() + 2)))
+
+    def _seleccionar_orden(self, clave_orden):
+        if self.orden_activo == clave_orden and clave_orden is not None:
+            # Si vuelve a pulsar el mismo criterio activo, alterna a por defecto
+            self.orden_activo = None
+        else:
+            self.orden_activo = clave_orden
         self.load_cards()
 
     def retranslate_ui(self):
         self.header.setText(t("Colección"))
         self.buscador.setPlaceholderText(t("Buscar carta por nombre..."))
-        if hasattr(self, 'btn_aplicar_filtros'):
-            self.btn_aplicar_filtros.setText(t('Aplicar'))
-
-
-    def toggle_filters_panel(self):
-        visible = not self.filters_panel.isVisible()
-        self.filters_panel.setVisible(visible)
-        if visible:
-            self.btn_toggle_filtros.setText("Ocultar Filtros")
-        else:
-            self.btn_toggle_filtros.setText("Filtros")
+        if hasattr(self, "btn_coleccion"):
+            self.btn_coleccion.setText(t("Colección"))
+        if hasattr(self, "btn_ordenar"):
+            self.btn_ordenar.setText(t("Ordenar"))
 
     def cargar_opciones_filtros(self):
-        session = SessionLocal()
-        try:
-            for col_name, combo in self.filtros.items():
-                combo.clear()
-                combo.addItem("Todos")
-                valores = (
-                    session.query(getattr(Cartas, col_name))
-                    .join(UsuarioCarta, Cartas.id_api == UsuarioCarta.carta_id)
-                    .filter(UsuarioCarta.usuario_nombre == self.usuario)
-                    .filter(getattr(Cartas, col_name).isnot(None))
-                    .distinct()
-                    .all()
-                )
-                sorted_vals = sorted(v[0] for v in valores if v[0])
-                for val in sorted_vals:
-                    combo.addItem(val)
-        finally:
-            session.close()
+        """Método mantenido por compatibilidad con llamadas externas."""
+        pass
 
-    def _create_card_row_widget(self, id_api, map_idiomas):
-        idiomas_disponibles = list(map_idiomas.keys())
-        if not idiomas_disponibles:
-            return None
+    def _create_single_card_widget(self, carta, variante_db="Normal"):
+        """Crea el widget de carta individual con su idioma y variante respectivos, igual que en Colecciones (Issue #43)."""
+        id_api = carta.id_api
+        card_lang = getattr(carta, "idioma", None) or "es"
+        variante = variante_db or "Normal"
+        nombre = carta.nombre or ""
+        nombre_archivo = nombre.lower().replace(" ", "_")
+        card_size = (120, 170)
 
-        lang_upper_map = {"es": "ES", "en": "EN", "ja": "JA", "fr": "FR", "pt": "PT", "zh": "ZH", "zh-tw": "ZH"}
-        flag_emoji_map = {"es": "🇪🇸", "en": "🇬🇧", "ja": "🇯🇵", "fr": "🇫🇷", "pt": "🇵🇹", "zh": "🇨🇳", "zh-tw": "🇨🇳"}
-
-        item_container = QWidget()
-        item_layout = QHBoxLayout(item_container)
-        item_layout.setContentsMargins(4, 2, 4, 2)
-        item_layout.setSpacing(8)
-
-        lang_badge_btn = QPushButton()
-        lang_badge_btn.setFixedWidth(44)
-        lang_badge_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-
-        first_lang = idiomas_disponibles[0]
-        first_carta = map_idiomas[first_lang]
-        nombre_archivo = first_carta.nombre.lower().replace(" ", "_")
-
-        pixmap = get_webp_pixmap(id_api, first_carta.nombre, first_lang, size=(100, 140))
+        pixmap = get_webp_pixmap(id_api, nombre, card_lang, size=card_size, allow_lang_fallback=False)
         if not pixmap:
-            pixmap = get_pixmap_from_zip(nombre_archivo, size=(100, 140), id_api=id_api)
+            pixmap = get_webp_pixmap(id_api, nombre, card_lang, size=card_size, allow_lang_fallback=True)
+        if not pixmap:
+            pixmap = get_pixmap_from_zip(nombre_archivo, size=card_size, id_api=id_api)
         if not pixmap:
             ruta_alt = os.path.join(IMAGES_DIR, f"{nombre_archivo}_{id_api}.webp")
             if os.path.exists(ruta_alt):
-                pixmap = QPixmap(ruta_alt)
+                pixmap = QPixmap(ruta_alt).scaled(
+                    card_size[0], card_size[1],
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation
+                )
         if not pixmap or pixmap.isNull():
-            pixmap = get_card_placeholder_pixmap((100, 140), first_carta.nombre)
+            pixmap = get_card_placeholder_pixmap(card_size, nombre)
 
         card_lbl = DraggableCardLabel(id_api, nombre_archivo, pixmap)
-        card_lbl.idioma = first_lang
+        card_lbl.setFixedSize(card_size[0], card_size[1])
+        card_lbl.idioma = card_lang
+        card_lbl.variante = variante
 
-        state = {
-            "index": 0,
-            "idiomas": idiomas_disponibles
-        }
+        # Botón vertical de variante (arriba a la izquierda, igual que en Colecciones)
+        variant_badge = VariantBadgeButton(id_api, variante, card_lbl)
+        variant_badge.move(3, 3)
+        variant_badge.raise_()
 
-        def update_display(idx_val):
-            state["index"] = idx_val
-            current_l = state["idiomas"][idx_val]
-            c_obj = map_idiomas[current_l]
-            n_arch = c_obj.nombre.lower().replace(" ", "_")
+        def _on_var_changed(_cid, nueva_var):
+            card_lbl.variante = nueva_var
+            self._actualizar_variante_bd(id_api, card_lang, nueva_var)
 
-            l_upper = lang_upper_map.get(current_l.lower(), current_l.upper())
-            f_emoji = flag_emoji_map.get(current_l.lower(), "🌐")
+        variant_badge.variant_changed.connect(_on_var_changed)
 
-            if len(state["idiomas"]) > 1:
-                lang_badge_btn.setText(f"{l_upper} 🔄\n{f_emoji}")
-                lang_badge_btn.setToolTip(f"Idioma actual: {l_upper}\n(Haz clic para cambiar entre idiomas en tu colección)")
-            else:
-                lang_badge_btn.setText(f"{l_upper}\n{f_emoji}")
-                lang_badge_btn.setToolTip(f"Idioma disponible: {l_upper}")
+        # Botón de información (arriba a la derecha, igual que en Colecciones)
+        info_btn = InfoIconLabel(carta, card_lbl)
+        info_btn.move(card_size[0] - 26, 3)
+        info_btn.raise_()
 
-            lang_badge_btn.setStyleSheet("""
-                QPushButton {
-                    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #f43f5e, stop:1 #e11d48);
-                    color: #ffffff;
-                    font-weight: bold;
-                    font-size: 11px;
-                    border: 1.5px solid #fda4af;
-                    border-radius: 8px;
-                    padding: 4px 2px;
-                }
-                QPushButton:hover {
-                    background-color: #be123c;
-                    border-color: #ffffff;
-                }
-            """)
+        # Insignia distintiva de idioma (abajo a la izquierda, igual que en Colecciones)
+        lang_badge = LanguageBadgeLabel(card_lang, card_lbl)
+        badge_h = lang_badge.height()
+        lang_badge.move(3, card_size[1] - badge_h - 3)
+        lang_badge.raise_()
 
-            pix = get_webp_pixmap(id_api, c_obj.nombre, current_l, size=(100, 140))
-            if not pix:
-                pix = get_pixmap_from_zip(n_arch, size=(100, 140), id_api=id_api)
-            if not pix:
-                r_alt = os.path.join(IMAGES_DIR, f"{n_arch}_{id_api}.webp")
-                if os.path.exists(r_alt):
-                    pix = QPixmap(r_alt)
-            if not pix or pix.isNull():
-                pix = get_card_placeholder_pixmap((100, 140), c_obj.nombre)
+        # Indicador geométrico de rareza (abajo a la derecha, igual que en Colecciones)
+        from MyQtApp.ui.FilterVisualBar import RaritySymbolBadge
+        rarity_badge = RaritySymbolBadge(getattr(carta, "rarity", None), card_lbl)
+        rarity_badge.move(card_size[0] - rarity_badge.width() - 3, card_size[1] - rarity_badge.height() - 3)
+        rarity_badge.raise_()
 
-            if pix and not pix.isNull():
-                card_lbl.setPixmap(pix)
+        price_val = f"${carta.price:.2f}" if (carta.price and carta.price > 0) else "N/A"
+        card_lbl.setToolTip(
+            f"<b>{nombre}</b><br/>ID: {id_api}<br/>Idioma: {card_lang.upper()}<br/>"
+            f"Tipo: {carta.type or 'N/A'}<br/>Rareza: {carta.rarity or 'N/A'}<br/>Precio: {price_val} USD"
+        )
+        return card_lbl
 
-            card_lbl.idioma = current_l
-            card_lbl.nombre_archivo = n_arch
-            price_val = f"${c_obj.price:.2f}" if (c_obj.price and c_obj.price > 0) else "N/A"
-            card_lbl.setToolTip(f"<b>{c_obj.nombre}</b> [{f_emoji}]<br/>ID: {id_api}<br/>Idioma: {l_upper}<br/>Tipo: {c_obj.type or 'N/A'}<br/>Rareza: {c_obj.rarity or 'N/A'}<br/>Precio: {price_val} USD")
-
-        def cycle_language(checked=False):
-            if len(state["idiomas"]) > 1:
-                next_idx = (state["index"] + 1) % len(state["idiomas"])
-                update_display(next_idx)
-
-        lang_badge_btn.clicked.connect(cycle_language)
-        update_display(0)
-
-        item_layout.addWidget(lang_badge_btn)
-        item_layout.addWidget(card_lbl)
-        return item_container
+    def _actualizar_variante_bd(self, id_api: str, card_lang: str, nueva_variante: str):
+        session = SessionLocal()
+        try:
+            rel = (
+                session.query(UsuarioCarta)
+                .filter(
+                    UsuarioCarta.usuario_nombre == self.usuario,
+                    UsuarioCarta.carta_id == id_api,
+                    func.coalesce(UsuarioCarta.idioma, "es") == card_lang,
+                )
+                .first()
+            )
+            if rel:
+                rel.variante = nueva_variante
+                session.commit()
+                show_toast(f"Variante actualizada: {nueva_variante}", "info")
+        except Exception as e:
+            session.rollback()
+            print(f"Error actualizando variante desde sidebar de binder: {e}")
+        finally:
+            session.close()
 
     def load_cards(self):
         session = SessionLocal()
         try:
             from sqlalchemy import and_, func
+            from MyQtApp.app.db_services import obtener_categorias_usuario
+
+            if self.coleccion_activa:
+                cats = obtener_categorias_usuario(self.usuario)
+                if self.coleccion_activa not in cats:
+                    self.coleccion_activa = None
+
             query = (
-                session.query(Cartas)
+                session.query(Cartas, UsuarioCarta.variante)
                 .join(UsuarioCarta, and_(
                     Cartas.id_api == UsuarioCarta.carta_id,
                     func.coalesce(Cartas.idioma, 'es') == func.coalesce(UsuarioCarta.idioma, 'es')
@@ -749,27 +822,24 @@ class InventorySidebar(QWidget):
                 .filter(UsuarioCarta.usuario_nombre == self.usuario)
             )
 
-            # 1. Buscar por nombre
+            # 1. Filtrar por colección específica si está seleccionada (Issue #42)
+            if self.coleccion_activa:
+                query = query.filter(UsuarioCarta.categoria == self.coleccion_activa)
+
+            # 2. Buscar por nombre
             texto = self.buscador.text().strip().lower()
             if texto:
                 query = query.filter(func.lower(Cartas.nombre).like(f"%{texto}%"))
 
-            # 2. Filtros desplegables
-            for col_name, combo in self.filtros.items():
-                if combo.currentIndex() > 0:
-                    val = combo.currentText()
-                    query = query.filter(getattr(Cartas, col_name) == val)
+            rows = query.all()
 
-            todas_cartas = query.all()
-
-            # Agrupar cartas por id_api y registrar idiomas que el usuario realmente posee
-            cartas_por_id = {}
-            for carta in todas_cartas:
-                id_api = carta.id_api
-                card_lang = getattr(carta, 'idioma', 'es') or 'es'
-                if id_api not in cartas_por_id:
-                    cartas_por_id[id_api] = {}
-                cartas_por_id[id_api][card_lang] = carta
+            # 3. Ordenar por Rareza, Energía o Idioma si está activo (Issue #42)
+            if self.orden_activo == "rarity":
+                rows.sort(key=lambda r: ((r[0].rarity or "zzz").lower(), (r[0].nombre or "").lower()))
+            elif self.orden_activo == "type":
+                rows.sort(key=lambda r: ((r[0].type or "zzz").lower(), (r[0].nombre or "").lower()))
+            elif self.orden_activo == "idioma":
+                rows.sort(key=lambda r: ((r[0].idioma or "es").lower(), (r[0].nombre or "").lower()))
 
             # Limpiar área de cartas
             for i in reversed(range(self.cards_layout.count())):
@@ -777,10 +847,10 @@ class InventorySidebar(QWidget):
                 if item and item.widget():
                     item.widget().deleteLater()
 
-            for id_api, map_idiomas in cartas_por_id.items():
-                item_widget = self._create_card_row_widget(id_api, map_idiomas)
+            for carta, variante_db in rows:
+                item_widget = self._create_single_card_widget(carta, variante_db)
                 if item_widget:
-                    self.cards_layout.addWidget(item_widget)
+                    self.cards_layout.addWidget(item_widget, alignment=Qt.AlignmentFlag.AlignHCenter)
         finally:
             session.close()
 
@@ -2130,6 +2200,23 @@ class BinderView(QWidget):
                 color: #5a2a3a;
                 font-size: 13px;
             }
+            QComboBox QAbstractItemView {
+                background-color: #0f172a;
+                color: #ffffff;
+                selection-background-color: #e25b70;
+                selection-color: #ffffff;
+                border: 1.5px solid #f7a8b8;
+                outline: none;
+            }
+            QComboBox QAbstractItemView::item {
+                color: #ffffff;
+                background-color: #0f172a;
+                padding: 6px 10px;
+            }
+            QComboBox QAbstractItemView::item:selected {
+                background-color: #e25b70;
+                color: #ffffff;
+            }
             QLineEdit:focus, QComboBox:focus {
                 border-color: #f56b7b;
             }
@@ -2240,11 +2327,28 @@ class BinderView(QWidget):
         col_name.addWidget(txt_nombre)
         row_top.addLayout(col_name, 2)
 
+        def _style_combo_popup_white_text(cb: QComboBox):
+            from PyQt6.QtGui import QPalette
+            view = cb.view()
+            if view is not None:
+                pal = view.palette()
+                pal.setColor(QPalette.ColorRole.Base, QColor("#0f172a"))
+                pal.setColor(QPalette.ColorRole.Window, QColor("#0f172a"))
+                pal.setColor(QPalette.ColorRole.Text, QColor("#ffffff"))
+                pal.setColor(QPalette.ColorRole.WindowText, QColor("#ffffff"))
+                pal.setColor(QPalette.ColorRole.ButtonText, QColor("#ffffff"))
+                pal.setColor(QPalette.ColorRole.Highlight, QColor("#e25b70"))
+                pal.setColor(QPalette.ColorRole.HighlightedText, QColor("#ffffff"))
+                view.setPalette(pal)
+            for i in range(cb.count()):
+                cb.setItemData(i, QColor("#ffffff"), Qt.ItemDataRole.ForegroundRole)
+
         col_mode = QVBoxLayout()
         col_mode.setSpacing(4)
         col_mode.addWidget(QLabel(t("Bolsillos")))
         combo_tamano = QComboBox()
         combo_tamano.addItems(["3x3", "2x2", "3x4", "4x4"])
+        _style_combo_popup_white_text(combo_tamano)
         idx_m = combo_tamano.findText(init_mode)
         if idx_m >= 0:
             combo_tamano.setCurrentIndex(idx_m)
@@ -2274,6 +2378,7 @@ class BinderView(QWidget):
         predef_layout.addWidget(QLabel(t("Diseño predefinido (asigna portada, color e interior)")))
         combo_diseno = QComboBox()
         combo_diseno.addItems(list(BINDER_DESIGNS.keys()))
+        _style_combo_popup_white_text(combo_diseno)
         idx_d = combo_diseno.findText(default_design)
         if idx_d >= 0:
             combo_diseno.setCurrentIndex(idx_d)

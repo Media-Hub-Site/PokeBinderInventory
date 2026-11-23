@@ -358,18 +358,6 @@ class PrintView(QWidget):
         row_paper.addWidget(self.combo_paper)
         config_vbox.addLayout(row_paper)
 
-        # Medidas de cartas
-        row_card_size = QHBoxLayout()
-        lbl_csize = QLabel(_plain_label(t("Medidas de carta")) + ":", self)
-        lbl_csize.setStyleSheet("color: #ffffff; font-size: 11px; border: none; padding: 0;")
-        self.combo_card_size = QComboBox(self)
-        self.combo_card_size.addItems(["Standard TCG (63 x 88 mm)", "Japanese Size (59 x 86 mm)"])
-        self.combo_card_size.setStyleSheet(combo_small_style)
-        self._apply_dark_combo_palette(self.combo_card_size)
-        row_card_size.addWidget(lbl_csize)
-        row_card_size.addWidget(self.combo_card_size)
-        config_vbox.addLayout(row_card_size)
-
         # Marcas de corte
         self.chk_crop_marks = QCheckBox(_plain_label(t("Marcas de corte")), self)
         self.chk_crop_marks.setChecked(True)
@@ -777,9 +765,8 @@ class PrintView(QWidget):
             paper_w_mm = 215.9 if is_letter else 210.0
             paper_h_mm = 279.4 if is_letter else 297.0
 
-            is_japanese = "Japanese" in self.combo_card_size.currentText()
-            card_w_mm = 59.0 if is_japanese else 63.0
-            card_h_mm = 86.0 if is_japanese else 88.0
+            card_w_mm = 63.0
+            card_h_mm = 88.0
 
             spacing_mm = 1.0 if self.chk_spacing.isChecked() else 0.0
             draw_crop_marks = self.chk_crop_marks.isChecked()

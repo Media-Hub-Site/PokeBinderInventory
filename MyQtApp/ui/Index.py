@@ -62,9 +62,9 @@ class VariantLegendSidebarWidget(QWidget):
         layout.addWidget(header)
 
         from PyQt6.QtGui import QPalette, QColor
-        white_pal = QPalette()
-        white_pal.setColor(QPalette.ColorRole.WindowText, QColor("#ffffff"))
-        white_pal.setColor(QPalette.ColorRole.Text, QColor("#ffffff"))
+        black_pal = QPalette()
+        black_pal.setColor(QPalette.ColorRole.WindowText, QColor("#000000"))
+        black_pal.setColor(QPalette.ColorRole.Text, QColor("#000000"))
 
         from MyQtApp.config import VARIANT_COLOR_MAP
         for key, info in VARIANT_COLOR_MAP.items():
@@ -77,8 +77,8 @@ class VariantLegendSidebarWidget(QWidget):
             color_badge.setStyleSheet(f"background-color: {info['color']}; border: 1px solid {info['border']}; border-radius: 3px;")
 
             desc = QLabel(f"{info['name']}", self)
-            desc.setPalette(white_pal)
-            desc.setStyleSheet("font-size: 10px; color: #ffffff; font-weight: 600; border: none; background: transparent;")
+            desc.setPalette(black_pal)
+            desc.setStyleSheet("font-size: 10px; color: #000000; font-weight: 600; border: none; background: transparent;")
 
             item_row.addWidget(color_badge)
             item_row.addWidget(desc)
@@ -141,6 +141,9 @@ class MainWindow(QWidget):
         # Cuadro explicativo de los colores de Variantes (visible en Binder y Colecciones)
         nav_layout.addSpacing(12)
         self.variant_legend_sidebar = VariantLegendSidebarWidget(self)
+        sp_legend = self.variant_legend_sidebar.sizePolicy()
+        sp_legend.setRetainSizeWhenHidden(True)
+        self.variant_legend_sidebar.setSizePolicy(sp_legend)
         nav_layout.addWidget(self.variant_legend_sidebar)
 
         nav_layout.addStretch()
@@ -153,15 +156,16 @@ class MainWindow(QWidget):
         nav_layout.addSpacing(14)
 
 
-        # Panel lateral
+        # Panel lateral (ancho consistente igual al de Colecciones para evitar cambios de margen - Issue #39)
         side_widget = QWidget()
         side_layout_wrapper = QVBoxLayout(side_widget)
         side_layout_wrapper.setContentsMargins(12, 12, 12, 12)
         side_widget.setObjectName('side')
+        side_widget.setFixedWidth(176)
         side_layout_wrapper.addLayout(nav_layout)
         side_layout_wrapper.addStretch()
 
-        main_layout.addWidget(side_widget, 1)
+        main_layout.addWidget(side_widget, 0)
 
         # Páginas con transición
         self.paginas = QStackedWidget()

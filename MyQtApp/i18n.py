@@ -281,32 +281,39 @@ TRANSLATIONS = {
         "Português": "Espaçamento entre cartas"
     },
     "Agregar": {
-        "Español": "➕ Agregar",
-        "English": "➕ Add",
-        "日本語": "➕ 追加",
-        "Français": "➕ Ajouter",
-        "Português": "➕ Adicionar"
+        "Español": "Agregar",
+        "English": "Add",
+        "日本語": "追加",
+        "Français": "Ajouter",
+        "Português": "Adicionar"
     },
     "Eliminar": {
-        "Español": "🗑️ Eliminar",
-        "English": "🗑️ Delete",
-        "日本語": "🗑️ 削除",
-        "Français": "🗑️ Supprimer",
-        "Português": "🗑️ Excluir"
+        "Español": "Eliminar",
+        "English": "Delete",
+        "日本語": "削除",
+        "Français": "Supprimer",
+        "Português": "Excluir"
     },
     "Vaciar": {
-        "Español": "⚠️ Vaciar",
-        "English": "⚠️ Clear All",
-        "日本語": "⚠️ すべて消去",
-        "Français": "⚠️ Vider",
-        "Português": "⚠️ Esvaziar"
+        "Español": "Vaciar",
+        "English": "Clear All",
+        "日本語": "すべて消去",
+        "Français": "Vider",
+        "Português": "Esvaziar"
+    },
+    "Salir": {
+        "Español": "Salir",
+        "English": "Exit",
+        "日本語": "終了",
+        "Français": "Quitter",
+        "Português": "Sair"
     },
     "Salir del programa": {
-        "Español": "🚪 Salir del programa",
-        "English": "🚪 Exit Program",
-        "日本語": "🚪 プログラムを終了",
-        "Français": "🚪 Quitter el programa",
-        "Português": "🚪 Sair do programa"
+        "Español": "Salir",
+        "English": "Exit",
+        "日本語": "終了",
+        "Français": "Quitter",
+        "Português": "Sair"
     },
     "Menú Principal": {
         "Español": "Menú Principal - Usuario",

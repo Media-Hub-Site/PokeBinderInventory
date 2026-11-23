@@ -277,15 +277,17 @@ class PrintView(QWidget):
 
         self.combo_origen_tipo = QComboBox(self)
         self.combo_origen_tipo.addItem(_plain_label(t("Mazos")), "mazo")
-        self.combo_origen_tipo.addItem(_plain_label(t("Colección")), "coleccion")
-        self.combo_origen_tipo.addItem(_plain_label(t("Carpetas de Colección")), "carpeta_coleccion")
+        self.combo_origen_tipo.addItem(_plain_label(t("Colecciones")), "coleccion")
+        self.combo_origen_tipo.addItem(_plain_label(t("Sub-colecciones")), "carpeta_coleccion")
         self.combo_origen_tipo.addItem(_plain_label(t("Binders")), "binder")
         self.combo_origen_tipo.setStyleSheet(combo_style)
+        self._apply_dark_combo_palette(self.combo_origen_tipo)
         self.combo_origen_tipo.currentIndexChanged.connect(self.refrescar_items_origen)
         source_vbox.addWidget(self.combo_origen_tipo)
 
         self.combo_origen_item = QComboBox(self)
         self.combo_origen_item.setStyleSheet(combo_style)
+        self._apply_dark_combo_palette(self.combo_origen_item)
         source_vbox.addWidget(self.combo_origen_item)
 
         # Alias retrocompatible por si alguna referencia externa consulta combo_mazos
@@ -351,6 +353,7 @@ class PrintView(QWidget):
         self.combo_paper = QComboBox(self)
         self.combo_paper.addItems(["A4 (210 x 297 mm)", "Letter (215.9 x 279.4 mm)"])
         self.combo_paper.setStyleSheet(combo_small_style)
+        self._apply_dark_combo_palette(self.combo_paper)
         row_paper.addWidget(lbl_paper)
         row_paper.addWidget(self.combo_paper)
         config_vbox.addLayout(row_paper)
@@ -362,6 +365,7 @@ class PrintView(QWidget):
         self.combo_card_size = QComboBox(self)
         self.combo_card_size.addItems(["Standard TCG (63 x 88 mm)", "Japanese Size (59 x 86 mm)"])
         self.combo_card_size.setStyleSheet(combo_small_style)
+        self._apply_dark_combo_palette(self.combo_card_size)
         row_card_size.addWidget(lbl_csize)
         row_card_size.addWidget(self.combo_card_size)
         config_vbox.addLayout(row_card_size)
@@ -473,6 +477,20 @@ class PrintView(QWidget):
 
         self.refrescar_items_origen()
         self.actualizar_estadisticas()
+
+    def _apply_dark_combo_palette(self, combo: QComboBox):
+        """Fuerza texto blanco sobre fondo oscuro en el popup de QComboBox en Windows 11."""
+        from PyQt6.QtGui import QPalette
+        view = combo.view()
+        if view is not None:
+            pal = view.palette()
+            pal.setColor(QPalette.ColorRole.Base, QColor("#0f172a"))
+            pal.setColor(QPalette.ColorRole.Window, QColor("#0f172a"))
+            pal.setColor(QPalette.ColorRole.Text, QColor("#ffffff"))
+            pal.setColor(QPalette.ColorRole.WindowText, QColor("#ffffff"))
+            pal.setColor(QPalette.ColorRole.Highlight, QColor("#0284c7"))
+            pal.setColor(QPalette.ColorRole.HighlightedText, QColor("#ffffff"))
+            view.setPalette(pal)
 
     def _load_user_binders(self) -> dict:
         if not os.path.exists(BINDER_DATA_FILE):

@@ -228,6 +228,18 @@ class BinderSlot(QLabel):
             overlay.show_zoom(pix, origin_global, id_api=self.id_api, nombre_archivo=self.nombre_archivo, idioma=idioma)
 
     def update_style(self):
+        # Adaptar contraste del bolsillo al color interior de la hoja (Issue #28)
+        is_light_page = False
+        try:
+            p = self.parent()
+            if p is not None and hasattr(p, "interior_color") and p.interior_color:
+                ic = QColor(p.interior_color)
+                if ic.isValid():
+                    luma = 0.299 * ic.red() + 0.587 * ic.green() + 0.114 * ic.blue()
+                    is_light_page = luma > 155
+        except Exception:
+            is_light_page = False
+
         if self.id_api:
             if self.selected:
                 self.setStyleSheet("""
@@ -238,25 +250,30 @@ class BinderSlot(QLabel):
                     }
                 """)
             else:
-                self.setStyleSheet("""
-                    QLabel {
-                        background-color: rgba(255, 255, 255, 0.04);
-                        border: 1.5px solid rgba(255, 255, 255, 0.22);
+                border_col = "rgba(15, 23, 42, 0.25)" if is_light_page else "rgba(255, 255, 255, 0.22)"
+                bg_col = "rgba(15, 23, 42, 0.04)" if is_light_page else "rgba(255, 255, 255, 0.04)"
+                self.setStyleSheet(f"""
+                    QLabel {{
+                        background-color: {bg_col};
+                        border: 1.5px solid {border_col};
                         border-radius: 7px;
-                    }
+                    }}
                 """)
         else:
             self.selected = False
-            self.setStyleSheet("""
-                QLabel {
-                    background-color: rgba(255, 255, 255, 0.05);
-                    border: 1.5px dashed rgba(255, 255, 255, 0.22);
+            empty_bg = "rgba(15, 23, 42, 0.05)" if is_light_page else "rgba(255, 255, 255, 0.05)"
+            empty_border = "rgba(15, 23, 42, 0.28)" if is_light_page else "rgba(255, 255, 255, 0.22)"
+            hover_bg = "rgba(244, 143, 177, 0.16)" if is_light_page else "rgba(255, 255, 255, 0.11)"
+            self.setStyleSheet(f"""
+                QLabel {{
+                    background-color: {empty_bg};
+                    border: 1.5px dashed {empty_border};
                     border-radius: 7px;
-                }
-                QLabel:hover {
-                    background-color: rgba(255, 255, 255, 0.11);
-                    border: 1.5px dashed rgba(244, 143, 177, 0.70);
-                }
+                }}
+                QLabel:hover {{
+                    background-color: {hover_bg};
+                    border: 1.5px dashed rgba(244, 143, 177, 0.85);
+                }}
             """)
             self.clear()
 
@@ -827,6 +844,7 @@ class BinderPage(QWidget):
                 slot = BinderSlot(
                     page_index,
                     slot_idx,
+                    parent=self,
                     binder_view=binder_view,
                     slot_w=slot_w,
                     slot_h=slot_h,
@@ -1056,21 +1074,6 @@ class BinderView(QWidget):
         self.combo_folders.currentIndexChanged.connect(self.on_folder_selected)
         header_layout.addWidget(self.combo_folders)
 
-        self.btn_new_folder = QPushButton(f"+ {t('Carpeta')}")
-        self.btn_new_folder.setFixedHeight(30)
-        self.btn_new_folder.setProperty("class", "pill")
-        self.btn_new_folder.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_new_folder.clicked.connect(self.abrir_dialogo_crear_carpeta)
-        header_layout.addWidget(self.btn_new_folder)
-
-        self.btn_manage_folders = QPushButton(t("Gestionar"))
-        self.btn_manage_folders.setFixedHeight(30)
-        self.btn_manage_folders.setProperty("class", "pill")
-        self.btn_manage_folders.setToolTip(t("Administrar o eliminar carpetas"))
-        self.btn_manage_folders.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_manage_folders.clicked.connect(self.abrir_dialogo_administrar_carpetas)
-        header_layout.addWidget(self.btn_manage_folders)
-
         self.btn_edit_current_folder = QPushButton(t("Editar"))
         self.btn_edit_current_folder.setFixedHeight(30)
         self.btn_edit_current_folder.setProperty("class", "pill")
@@ -1080,19 +1083,6 @@ class BinderView(QWidget):
         header_layout.addWidget(self.btn_edit_current_folder)
 
         header_layout.addStretch()
-
-        # Etiqueta informativa del modo fijo de la carpeta
-        self.lbl_folder_info_badge = QLabel("")
-        self.lbl_folder_info_badge.setStyleSheet("""
-            background-color: #ffdce5;
-            color: #703043;
-            font-size: 12px;
-            font-weight: bold;
-            padding: 4px 12px;
-            border-radius: 10px;
-            border: 1px solid #f2a7b7;
-        """)
-        header_layout.addWidget(self.lbl_folder_info_badge)
 
         right_layout.addLayout(header_layout)
 
@@ -1677,7 +1667,7 @@ class BinderView(QWidget):
         if ordered_sources:
             palette = {
                 "TCGPlayer": ("#ecfdf5", "#15803d", "#86efac"),
-                "Cardmarket": ("#eff6ff", "#1d4ed8", "#93c5fd"),
+                "TCGMatch": ("#eff6ff", "#1d4ed8", "#93c5fd"),
                 "PokemonTCG": ("#fef3c7", "#b45309", "#fcd34d"),
                 "TCGCSV": ("#f5f3ff", "#6d28d9", "#c4b5fd"),
             }
@@ -1698,7 +1688,7 @@ class BinderView(QWidget):
         else:
             base_usd = res["base_total_usd"]
             pill = QLabel(f"Mercado Base = ${base_usd:,.2f} USD")
-            pill.setToolTip(t("Presiona 'Cotizar Mercado' para comparar precios entre TCGPlayer, Cardmarket y PokemonTCG"))
+            pill.setToolTip(t("Presiona 'Cotizar Mercado' para comparar precios entre TCGPlayer, TCGMatch y PokemonTCG"))
             pill.setStyleSheet(
                 "background-color: #fff0f3; color: #703043; border: 1px solid #f2a7b7; "
                 "border-radius: 8px; padding: 3px 10px; font-size: 11px; font-weight: bold;"
@@ -1931,6 +1921,16 @@ class BinderView(QWidget):
         is_locked = bool(f_data.get("locked", False))
 
         menu = QMenu(self)
+        from PyQt6.QtGui import QPalette
+        pal = menu.palette()
+        pal.setColor(QPalette.ColorRole.Window, QColor("#0f172a"))
+        pal.setColor(QPalette.ColorRole.Base, QColor("#0f172a"))
+        pal.setColor(QPalette.ColorRole.WindowText, QColor("#f8fafc"))
+        pal.setColor(QPalette.ColorRole.Text, QColor("#f8fafc"))
+        pal.setColor(QPalette.ColorRole.ButtonText, QColor("#f8fafc"))
+        pal.setColor(QPalette.ColorRole.Highlight, QColor("#e25b70"))
+        pal.setColor(QPalette.ColorRole.HighlightedText, QColor("#ffffff"))
+        menu.setPalette(pal)
         menu.setStyleSheet("""
             QMenu {
                 background-color: #0f172a;
@@ -1944,6 +1944,7 @@ class BinderView(QWidget):
                 padding: 6px 18px 6px 12px;
                 border-radius: 5px;
                 color: #f8fafc;
+                background-color: transparent;
             }
             QMenu::item:selected {
                 background-color: #e25b70;
@@ -1973,10 +1974,6 @@ class BinderView(QWidget):
         menu.addAction(act_dup)
 
         menu.addSeparator()
-
-        act_csv = QAction(t("Exportar CSV"), menu)
-        act_csv.triggered.connect(lambda: self.open_binder_in_print_requested.emit(folder_id, "csv"))
-        menu.addAction(act_csv)
 
         act_print = QAction(t("Imprimir"), menu)
         act_print.triggered.connect(lambda: self.open_binder_in_print_requested.emit(folder_id, "print"))
@@ -2089,8 +2086,6 @@ class BinderView(QWidget):
         folder_mode = folder.get("mode")
         if folder_mode and folder_mode in BINDER_MODES:
             self.current_mode = folder_mode
-        design_name = resolve_design_key(folder.get("design", "Charizard Fuego"))
-        self.lbl_folder_info_badge.setText(f"{self.current_mode}  |  {design_name}")
 
     def on_folder_selected(self, index):
         folder_id = self.combo_folders.currentData()
@@ -2553,8 +2548,6 @@ class BinderView(QWidget):
                 # Si estamos editando el binder actualmente abierto, refrescar en vivo
                 if self.current_folder_id == edit_folder_id and self.main_stack.currentWidget() == self.binder_pages_widget:
                     self.current_mode = final_mode
-                    badge_design = t("Personalizado") if is_custom else final_design
-                    self.lbl_folder_info_badge.setText(f"{self.current_mode}  |  {badge_design}")
                     self.update_spread(direction=0)
 
                 show_toast(f"{t('Binder actualizado')}: {nombre}", "success")
@@ -2975,6 +2968,7 @@ class BinderView(QWidget):
             design=design,
             color=color,
             can_go_prev=(spread_index > 0),
+            interior_color=interior_color,
         )
         spread_widget.drag_turn_started.connect(self._on_drag_turn_started)
         spread_widget.drag_turn_moved.connect(self._on_drag_turn_moved)

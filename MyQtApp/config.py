@@ -272,6 +272,10 @@ MUSIC_TRACK_NAMES = {
     5: "2010 Toyota Corolla",
     6: "Dosbomb. - Meow.",
     7: "Ryo Aratani - Neko Atsume no Theme",
+    8: "Tsundere Twintails - Rest Area",
+    9: "Tsundere Twintails - A Letter",
+    10: "Tsundere Twintails - Sunshine",
+    11: "Tsundere Twintails - Waiting",
 }
 
 def get_music_track_path(pista: int) -> str:

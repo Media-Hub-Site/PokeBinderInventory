@@ -96,7 +96,7 @@ class CartaPrecio(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True, nullable=False)
     carta_id = Column(String, nullable=False, index=True)
-    fuente = Column(String, nullable=False)  # Ej: TCGPlayer, Cardmarket, PokemonTCG, TCGCSV
+    fuente = Column(String, nullable=False)  # Ej: TCGPlayer, TCGMatch, PokemonTCG, TCGCSV
     moneda = Column(String, default="USD", nullable=False)
     precio_usd = Column(Float, default=0.0, nullable=False)
     precio_original = Column(Float, default=0.0, nullable=False)

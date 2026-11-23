@@ -29,7 +29,7 @@ QWidget#content {
     border-radius: 12px;
 }
 
-/* ── Botones de Navegación ───────────────────────────────────── */
+/* ── Botones de Navegación (3 estados: normal -> hover -> activo) ─ */
 QPushButton[class="NavButton"] {
     background-color: #f7a8b8;
     color: white;
@@ -43,12 +43,18 @@ QPushButton[class="NavButton"] {
     max-height: 44px;
 }
 QPushButton[class="NavButton"]:hover {
-    background-color: #f56b7b;
-    border-color: #f5475c;
+    background-color: #e9758b;
+    border-color: #df5b74;
 }
-QPushButton[class="NavButton"]:pressed {
-    background-color: #d44854;
-    border-color: #b33a46;
+QPushButton[class="NavButton"]:pressed,
+QPushButton[class="NavButton"][active="true"] {
+    background-color: #c93b55;
+    border-color: #9f273e;
+    font-weight: 700;
+}
+QPushButton[class="NavButton"][active="true"]:hover {
+    background-color: #b8324b;
+    border-color: #8f2035;
 }
 
 /* ── Botones Secundarios (Agregar, Eliminar, Vaciar) ─────────── */

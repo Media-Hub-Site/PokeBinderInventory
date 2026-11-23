@@ -1,3 +1,4 @@
+import os
 import re
 import time
 import threading
@@ -23,7 +24,7 @@ _tcgcsv_groups = None  # list of dicts from /tcgplayer/3/groups
 _tcgcsv_group_cache = {}  # groupId -> (products_by_id, prices_by_product_id)
 
 # Orden estándar de presentación de fuentes de precio
-PRICE_SOURCE_ORDER = ["TCGPlayer", "Cardmarket", "PokemonTCG", "TCGCSV"]
+PRICE_SOURCE_ORDER = ["TCGPlayer", "TCGMatch", "PokemonTCG", "TCGCSV"]
 
 
 def get_eur_to_usd_rate() -> float:
@@ -100,36 +101,91 @@ def _extract_tcgdex_prices(card_json: dict) -> dict:
                 "actualizado_en": tcgp.get("updated") or now_iso,
             }
 
-    # 2. Cardmarket (EUR -> convertido también a USD)
-    cm = pricing.get("cardmarket")
-    if isinstance(cm, dict):
-        cm_price = (
-            cm.get("trend")
-            or cm.get("avg")
-            or cm.get("trend-holo")
-            or cm.get("avg-holo")
-            or cm.get("avg7")
-            or cm.get("avg30")
-            or cm.get("low")
-        )
-        if cm_price is not None and float(cm_price) > 0:
-            cm_eur = float(cm_price)
-            rate = get_eur_to_usd_rate()
-            low_val = cm.get("low") or cm.get("low-holo")
-            avg30_val = cm.get("avg30") or cm.get("avg30-holo")
-            high_val = cm.get("avg1") or cm.get("avg7")
-            result["Cardmarket"] = {
-                "moneda": "EUR",
-                "precio_usd": round(cm_eur * rate, 2),
-                "precio_original": round(cm_eur, 2),
-                "low": round(float(low_val), 2) if low_val else None,
-                "mid": round(float(avg30_val), 2) if avg30_val else None,
-                "high": round(float(high_val), 2) if high_val else None,
-                "variante": "trend",
-                "actualizado_en": cm.get("updated") or now_iso,
-            }
-
     return result
+
+
+_clp_to_usd_rate = None
+_clp_rate_lock = threading.Lock()
+
+
+def get_clp_to_usd_rate() -> float:
+    """Obtiene la tasa CLP -> USD en vivo (con respaldo seguro ~1/950 USD)."""
+    global _clp_to_usd_rate
+    with _clp_rate_lock:
+        if _clp_to_usd_rate is not None:
+            return _clp_to_usd_rate
+    rate = 1.0 / 950.0
+    try:
+        r = requests.get("https://open.er-api.com/v6/latest/USD", headers=_HTTP_HEADERS, timeout=5)
+        if r.status_code == 200:
+            clp = r.json().get("rates", {}).get("CLP")
+            if clp and float(clp) > 0:
+                rate = 1.0 / float(clp)
+    except Exception:
+        pass
+    with _clp_rate_lock:
+        _clp_to_usd_rate = rate
+    return rate
+
+
+def consultar_precio_tcgmatch(card_name: str, number: str = None, set_name: str = None) -> dict | None:
+    """
+    Consulta precio de mercado en TCGMatch (tcgmatch.cl) para una carta Pokémon.
+    Usa api.tcgmatch.cl (con Bearer token si TCGMATCH_API_KEY está configurada) o búsqueda pública.
+    """
+    if not card_name:
+        return None
+    now_iso = datetime.now(timezone.utc).isoformat()
+    query_str = f"{card_name} {number}".strip() if number and number != "N/A" else card_name.strip()
+    headers = dict(_HTTP_HEADERS)
+    api_key = os.environ.get("TCGMATCH_API_KEY", "").strip()
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    endpoints = [
+        ("https://api.tcgmatch.cl/v1/cards", {"q": query_str, "game": "pokemon", "limit": 5}),
+        ("https://tcgmatch.cl/api/cards", {"search": query_str, "game": "pokemon"}),
+    ]
+    for url, params in endpoints:
+        try:
+            r = requests.get(url, params=params, headers=headers, timeout=5)
+            if r.status_code != 200:
+                continue
+            payload = r.json()
+            items = payload if isinstance(payload, list) else (payload.get("data") or payload.get("results") or payload.get("cards") or [])
+            if not isinstance(items, list):
+                continue
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                raw_price = (
+                    item.get("market_price")
+                    or item.get("avg_price")
+                    or item.get("price")
+                    or item.get("min_price")
+                )
+                if raw_price and float(raw_price) > 0:
+                    val = float(raw_price)
+                    currency = str(item.get("currency", "CLP")).upper()
+                    if currency == "CLP":
+                        usd_val = round(val * get_clp_to_usd_rate(), 2)
+                    else:
+                        usd_val = round(val, 2)
+                    low_v = item.get("min_price") or item.get("low_price")
+                    high_v = item.get("max_price") or item.get("high_price")
+                    return {
+                        "moneda": currency,
+                        "precio_usd": usd_val,
+                        "precio_original": round(val, 2),
+                        "low": round(float(low_v), 2) if low_v else None,
+                        "mid": round(val, 2),
+                        "high": round(float(high_v), 2) if high_v else None,
+                        "variante": "tcgmatch",
+                        "actualizado_en": item.get("updated_at") or now_iso,
+                    }
+        except Exception:
+            continue
+    return None
 
 
 def _extract_pokemontcg_price(c_info: dict) -> dict | None:
@@ -330,7 +386,7 @@ def guardar_precios_carta_bd(session, carta_id: str, precios_por_fuente: dict):
 
     # Sincronizar Cartas.price con el precio primario USD más confiable
     primary_usd = 0.0
-    for src in ("TCGPlayer", "PokemonTCG", "TCGCSV", "Cardmarket"):
+    for src in ("TCGPlayer", "TCGMatch", "PokemonTCG", "TCGCSV"):
         if src in precios_por_fuente and precios_por_fuente[src].get("precio_usd", 0) > 0:
             primary_usd = float(precios_por_fuente[src]["precio_usd"])
             break
@@ -431,7 +487,7 @@ def fetch_multi_api_prices(
     lang_code = normalize_lang_code(idioma)
     tcgdex_lang = TCGDEX_LANG_MAP.get(lang_code, "en")
 
-    # 1. TCGdex (provee TCGPlayer y Cardmarket simultáneamente, gratis y sin clave)
+    # 1. TCGdex (provee TCGPlayer gratis y sin clave)
     tcgdex_data = None
     for t_lang in ([tcgdex_lang, "en"] if tcgdex_lang != "en" else ["en"]):
         try:
@@ -454,6 +510,12 @@ def fetch_multi_api_prices(
                     break
         except Exception:
             pass
+
+    # 1b. TCGMatch (mercado latinoamericano / tcgmatch.cl)
+    if card_name:
+        tcgm_price = consultar_precio_tcgmatch(card_name, number=number, set_name=set_name)
+        if tcgm_price:
+            precios["TCGMatch"] = tcgm_price
 
     # 2. Pokémon TCG API (api.pokemontcg.io)
     ptcg_id = tcgdex_to_pokemontcg_id(id_api)

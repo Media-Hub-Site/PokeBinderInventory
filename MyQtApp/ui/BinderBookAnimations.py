@@ -112,8 +112,9 @@ def _paint_binder_board_background(
     accent_color: QColor,
     draw_rings: bool = True,
     hover_corner: str | None = None,
+    interior_color: str | None = None,
 ):
-    """Dibuja el cuerpo físico del binder abierto: tapas, grosor de hojas, fondo vinilo y anillas."""
+    """Dibuja el cuerpo físico del binder abierto: tapas, grosor de hojas, fondo interior y anillas."""
     painter.save()
     painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
 
@@ -165,22 +166,32 @@ def _paint_binder_board_background(
             1.5, 1.5
         )
 
-    # 4. Interior oscuro aterciopelado del binder
+    # 4. Contorno interior del binder: ligeramente más oscuro que el color de las hojas (Issue #28)
+    ic = QColor(interior_color) if interior_color else QColor("#18181e")
+    if not ic.isValid():
+        ic = QColor("#18181e")
+    luma = 0.299 * ic.red() + 0.587 * ic.green() + 0.114 * ic.blue()
+    inner_center = ic.darker(114)
+    inner_edge = ic.darker(134)
+
     inner_grad = QRadialGradient(cx, inner.center().y(), inner.width() * 0.65)
-    inner_grad.setColorAt(0.0, QColor("#27272e"))
-    inner_grad.setColorAt(1.0, QColor("#141418"))
+    inner_grad.setColorAt(0.0, inner_center)
+    inner_grad.setColorAt(1.0, inner_edge)
     painter.setBrush(inner_grad)
-    painter.setPen(QPen(QColor(255, 255, 255, 24), 1.0))
+    border_pen_col = QColor(15, 23, 42, 42) if luma > 155 else QColor(255, 255, 255, 24)
+    painter.setPen(QPen(border_pen_col, 1.0))
     painter.drawRoundedRect(inner, 8, 8)
 
-    # 5. Hendidura / sombra del lomo central
+    # 5. Hendidura / sombra del lomo central (suavizada para colores claros)
     gutter_w = 50.0
     gutter_rect = QRectF(cx - gutter_w / 2.0, inner.top(), gutter_w, inner.height())
     gutter = QLinearGradient(gutter_rect.left(), 0, gutter_rect.right(), 0)
+    g_mid = 48 if luma > 155 else 95
+    g_peak = 90 if luma > 155 else 175
     gutter.setColorAt(0.0, QColor(0, 0, 0, 0))
-    gutter.setColorAt(0.32, QColor(0, 0, 0, 95))
-    gutter.setColorAt(0.50, QColor(0, 0, 0, 175))
-    gutter.setColorAt(0.68, QColor(0, 0, 0, 95))
+    gutter.setColorAt(0.32, QColor(0, 0, 0, g_mid))
+    gutter.setColorAt(0.50, QColor(0, 0, 0, g_peak))
+    gutter.setColorAt(0.68, QColor(0, 0, 0, g_mid))
     gutter.setColorAt(1.0, QColor(0, 0, 0, 0))
     painter.fillRect(gutter_rect, gutter)
 
@@ -230,9 +241,10 @@ class BinderSpreadFrame(QWidget):
     drag_turn_moved = pyqtSignal(float)          # current_x_local
     drag_turn_released = pyqtSignal(float)       # end_x_local
 
-    def __init__(self, design="Charizard Fuego", color="auto", can_go_prev=False, parent=None):
+    def __init__(self, design="Charizard Fuego", color="auto", can_go_prev=False, interior_color=None, parent=None):
         super().__init__(parent)
         self.base_color, self.spine_color, self.accent_color = resolve_binder_palette(design, color)
+        self.interior_color = interior_color
         self.can_go_prev = can_go_prev
         self._hover_corner = None
         self._dragging_turn = False
@@ -244,8 +256,10 @@ class BinderSpreadFrame(QWidget):
         self.spread_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.spread_layout.setContentsMargins(24, 18, 24, 18)
 
-    def set_theme(self, design: str, color: str = "auto"):
+    def set_theme(self, design: str, color: str = "auto", interior_color: str = None):
         self.base_color, self.spine_color, self.accent_color = resolve_binder_palette(design, color)
+        if interior_color is not None:
+            self.interior_color = interior_color
         self.update()
 
     def get_board_rect(self) -> QRectF:
@@ -279,6 +293,7 @@ class BinderSpreadFrame(QWidget):
             self.accent_color,
             draw_rings=True,
             hover_corner=self._hover_corner,
+            interior_color=self.interior_color,
         )
 
     def _detect_edge_zone(self, pos: QPoint) -> str | None:

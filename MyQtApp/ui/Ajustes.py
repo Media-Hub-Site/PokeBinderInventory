@@ -843,14 +843,14 @@ class PokeBinderInfoDialog(QDialog):
         _add_card(
             "Fuentes de Precios de Mercado",
             "• <b>TCGPlayer</b>: precios de mercado de referencia en dólares estadounidenses (USD).<br>"
-            "• <b>Cardmarket</b>: precios del mercado europeo en euros (EUR), con conversión automática en vivo a USD.<br>"
+            "• <b>TCGMatch</b> (tcgmatch.cl): precios de mercado de referencia en Latinoamérica/Chile, con conversión automática a USD.<br>"
             "• <b>Pokémon TCG API y TCGCSV</b>: fuentes complementarias utilizadas para contrastar valores "
             "de mercado por carta y calcular el valor acumulado de tu colección y binders."
         )
 
         track_items = [
             f"• <b>Pista {n}</b>: {MUSIC_TRACK_NAMES.get(n, f'Pista {n}')}"
-            for n in range(1, 8)
+            for n in sorted(MUSIC_TRACK_NAMES.keys())
         ]
         track_list_html = "<br>".join(track_items)
         _add_card(

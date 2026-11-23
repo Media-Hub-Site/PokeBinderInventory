@@ -25,21 +25,34 @@ QWidget#content {
     border-radius: 12px;
 }
 
-/* ── Botones de Navegación ───────────────────────────────────── */
+/* ── Botones de Navegación (3 estados: normal -> hover -> activo) ─ */
 QPushButton[class="NavButton"] {
-    background-color: #2b2b2b;
-    color: #e0e0e0;
+    background-color: #3a3a44;
+    color: #f1f5f9;
     font-weight: 600;
     font-size: 14px;
     border-radius: 12px;
-    border: 2px solid #3a3a3a;
+    border: 2px solid #4c4c59;
     text-align: left;
     padding-left: 14px;
     min-height: 44px;
     max-height: 44px;
 }
-QPushButton[class="NavButton"]:hover  { background-color: #383838; border-color: #4a4a4a; }
-QPushButton[class="NavButton"]:pressed { background-color: #4a4a4a; border-color: #5c5c5c; }
+QPushButton[class="NavButton"]:hover {
+    background-color: #2b2b34;
+    border-color: #5e5e70;
+}
+QPushButton[class="NavButton"]:pressed,
+QPushButton[class="NavButton"][active="true"] {
+    background-color: #181820;
+    border-color: #c084fc;
+    color: #ffffff;
+    font-weight: 700;
+}
+QPushButton[class="NavButton"][active="true"]:hover {
+    background-color: #14141c;
+    border-color: #d8b4fe;
+}
 
 /* ── Botones Secundarios ─────────────────────────────────────── */
 QPushButton[class="ActionSecondary"] {

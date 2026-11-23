@@ -136,13 +136,13 @@ class GaleriaCartasInventario(QWidget):
         carpetas_bar_layout.setContentsMargins(10, 3, 10, 3)
         carpetas_bar_layout.setSpacing(8)
 
-        self.lbl_carpetas_titulo = QLabel(t("Carpetas"))
+        self.lbl_carpetas_titulo = QLabel(t("Colecciones"))
         self.lbl_carpetas_titulo.setStyleSheet(
             "font-size: 12px; font-weight: 700; color: #5a2a3a; border: none; background: transparent;"
         )
         carpetas_bar_layout.addWidget(self.lbl_carpetas_titulo)
 
-        # Contenedor horizontal desplazable de pastillas de carpetas
+        # Contenedor horizontal desplazable de pastillas de colecciones
         self.carpetas_scroll = QScrollArea()
         self.carpetas_scroll.setWidgetResizable(True)
         self.carpetas_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
@@ -158,7 +158,58 @@ class GaleriaCartasInventario(QWidget):
         self.carpetas_scroll.setWidget(self.carpetas_pills_widget)
         carpetas_bar_layout.addWidget(self.carpetas_scroll, stretch=1)
 
-        self.btn_nueva_cat = QPushButton(f"+ {t('Nueva Carpeta')}")
+        # Acciones de membresía de cartas en colecciones (Issue #32)
+        self.btn_asignar_col = QPushButton(t("Asignar a colección"))
+        self.btn_asignar_col.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_asignar_col.setFixedHeight(28)
+        self.btn_asignar_col.setToolTip(t("Asigna las cartas seleccionadas a una de tus colecciones"))
+        self.btn_asignar_col.setStyleSheet("""
+            QPushButton {
+                background-color: #ffffff;
+                color: #5a2a3a;
+                font-weight: 600;
+                font-size: 11px;
+                border: 1.5px solid #f29ca4;
+                border-radius: 9px;
+                padding: 2px 10px;
+            }
+            QPushButton:hover {
+                background-color: #ffdfe6;
+                border-color: #f56b7b;
+            }
+        """)
+        self.btn_asignar_col.clicked.connect(self.asignar_cartas_a_coleccion)
+        carpetas_bar_layout.addWidget(self.btn_asignar_col)
+
+        self.btn_quitar_col = QPushButton(t("Quitar de colección"))
+        self.btn_quitar_col.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_quitar_col.setFixedHeight(28)
+        self.btn_quitar_col.setToolTip(t("Quita las cartas seleccionadas de esta colección (seguirán en Todas)"))
+        self.btn_quitar_col.setStyleSheet("""
+            QPushButton {
+                background-color: #ffffff;
+                color: #b45309;
+                font-weight: 600;
+                font-size: 11px;
+                border: 1.5px solid #fcd34d;
+                border-radius: 9px;
+                padding: 2px 10px;
+            }
+            QPushButton:hover:enabled {
+                background-color: #fef3c7;
+                border-color: #f59e0b;
+            }
+            QPushButton:disabled {
+                color: #94a3b8;
+                border-color: #e2e8f0;
+                background-color: #f8fafc;
+            }
+        """)
+        self.btn_quitar_col.setEnabled(False)
+        self.btn_quitar_col.clicked.connect(self.quitar_cartas_de_coleccion)
+        carpetas_bar_layout.addWidget(self.btn_quitar_col)
+
+        self.btn_nueva_cat = QPushButton(f"+ {t('Nueva Colección')}")
         self.btn_nueva_cat.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_nueva_cat.setFixedHeight(28)
         self.btn_nueva_cat.setStyleSheet("""
@@ -169,7 +220,7 @@ class GaleriaCartasInventario(QWidget):
                 font-size: 12px;
                 border: 1.5px solid #f29ca4;
                 border-radius: 9px;
-                padding: 2px 14px;
+                padding: 2px 12px;
             }
             QPushButton:hover {
                 background-color: #f56b7b;
@@ -181,6 +232,35 @@ class GaleriaCartasInventario(QWidget):
         """)
         self.btn_nueva_cat.clicked.connect(self.abrir_creador_categorias)
         carpetas_bar_layout.addWidget(self.btn_nueva_cat)
+
+        # Botón eliminar colección activa al lado de Nueva Colección (Issue #33)
+        self.btn_eliminar_col = QPushButton(t("Eliminar Colección"))
+        self.btn_eliminar_col.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_eliminar_col.setFixedHeight(28)
+        self.btn_eliminar_col.setEnabled(False)
+        self.btn_eliminar_col.setToolTip(t("Elimina la colección seleccionada (desactivado en 'Todas')"))
+        self.btn_eliminar_col.setStyleSheet("""
+            QPushButton {
+                background-color: #ffffff;
+                color: #dc2626;
+                font-weight: 700;
+                font-size: 11px;
+                border: 1.5px solid #fca5a5;
+                border-radius: 9px;
+                padding: 2px 10px;
+            }
+            QPushButton:hover:enabled {
+                background-color: #fee2e2;
+                border-color: #ef4444;
+            }
+            QPushButton:disabled {
+                color: #94a3b8;
+                border-color: #e2e8f0;
+                background-color: #f8fafc;
+            }
+        """)
+        self.btn_eliminar_col.clicked.connect(self.eliminar_coleccion_activa)
+        carpetas_bar_layout.addWidget(self.btn_eliminar_col)
 
         header_vbox.addWidget(self.carpetas_bar)
         self.main_layout.addLayout(header_vbox)
@@ -292,18 +372,27 @@ class GaleriaCartasInventario(QWidget):
             self.carpetas_pills_layout.addWidget(_make_pill(cat, cat))
         self.carpetas_pills_layout.addStretch()
 
+        # Habilitar botones solo si estamos en una colección creada por el usuario (Issues #32 y #33)
+        en_coleccion_propia = bool(self.carpeta_activa)
+        if hasattr(self, "btn_eliminar_col"):
+            self.btn_eliminar_col.setEnabled(en_coleccion_propia)
+        if hasattr(self, "btn_quitar_col"):
+            self.btn_quitar_col.setEnabled(en_coleccion_propia)
+
     def _seleccionar_carpeta_pill(self, cat_value):
         if self.carpeta_activa == cat_value:
             return
         self.carpeta_activa = cat_value
         self.cargar_categorias_combo()
+        self.actualizar_valor_total()
         self.reset_page_and_actualizar()
 
     def abrir_creador_categorias(self):
-        from MyQtApp.app.db_services import obtener_categorias_usuario, crear_categoria_usuario, eliminar_categoria_usuario
+        """Diálogo limpio para crear una nueva colección (Issue #33: sin lista de colecciones existentes)."""
+        from MyQtApp.app.db_services import crear_categoria_usuario
         dlg = QDialog(self)
-        dlg.setWindowTitle(t("Carpetas de Colección"))
-        dlg.setFixedSize(400, 340)
+        dlg.setWindowTitle(t("Nueva Colección"))
+        dlg.setFixedSize(380, 185)
         dlg.setStyleSheet("""
             QDialog {
                 background-color: #fff5f7;
@@ -313,7 +402,7 @@ class GaleriaCartasInventario(QWidget):
                 color: #5a2a3a;
                 font-size: 13px;
             }
-            QLineEdit, QComboBox {
+            QLineEdit {
                 border: 2px solid #f7a8b8;
                 border-radius: 10px;
                 padding: 7px 10px;
@@ -321,25 +410,43 @@ class GaleriaCartasInventario(QWidget):
                 color: #5a2a3a;
                 font-size: 13px;
             }
-            QLineEdit:focus, QComboBox:focus {
+            QLineEdit:focus {
                 border-color: #f56b7b;
             }
         """)
 
         layout = QVBoxLayout(dlg)
-        layout.setContentsMargins(22, 20, 22, 20)
+        layout.setContentsMargins(22, 18, 22, 18)
         layout.setSpacing(10)
 
-        lbl_head = QLabel(t("Crear nueva carpeta"))
+        lbl_head = QLabel(t("Crear nueva colección"))
         lbl_head.setStyleSheet("font-size: 15px; font-weight: 700; color: #5a2a3a;")
         layout.addWidget(lbl_head)
 
         txt_nueva = QLineEdit()
-        txt_nueva.setPlaceholderText(t("Nombre de carpeta (ej: Favoritas, Charizards...)"))
+        txt_nueva.setPlaceholderText(t("Nombre de colección (ej: Favoritas, Kalos, Charizards...)"))
         layout.addWidget(txt_nueva)
 
-        btn_crear = QPushButton(t("Crear Carpeta"))
-        btn_crear.setFixedHeight(36)
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(10)
+
+        btn_cerrar = QPushButton(t("Cancelar"))
+        btn_cerrar.setFixedHeight(34)
+        btn_cerrar.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_cerrar.setStyleSheet("""
+            QPushButton {
+                background-color: #ffffff;
+                color: #703043;
+                border: 2px solid #f2c4ce;
+                border-radius: 10px;
+                font-weight: 600;
+            }
+            QPushButton:hover { background-color: #ffeef2; }
+        """)
+        btn_cerrar.clicked.connect(dlg.reject)
+
+        btn_crear = QPushButton(t("Crear Colección"))
+        btn_crear.setFixedHeight(34)
         btn_crear.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_crear.setStyleSheet("""
             QPushButton {
@@ -355,100 +462,185 @@ class GaleriaCartasInventario(QWidget):
                 border-color: #f5475c;
             }
         """)
-        layout.addWidget(btn_crear)
-
-        layout.addSpacing(8)
-        layout.addWidget(QLabel(t("Carpetas existentes")))
-        combo_existentes = QComboBox()
-        layout.addWidget(combo_existentes)
-
-        btn_eliminar_cat = QPushButton(t("Eliminar Carpeta Seleccionada"))
-        btn_eliminar_cat.setFixedHeight(34)
-        btn_eliminar_cat.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_eliminar_cat.setStyleSheet("""
-            QPushButton {
-                background-color: #ffffff;
-                color: #dc2626;
-                border: 1.5px solid #fca5a5;
-                font-weight: 600;
-                border-radius: 10px;
-            }
-            QPushButton:hover {
-                background-color: #fee2e2;
-                border-color: #ef4444;
-            }
-            QPushButton:disabled {
-                color: #94a3b8;
-                border-color: #e2e8f0;
-                background-color: #f8fafc;
-            }
-        """)
-        layout.addWidget(btn_eliminar_cat)
-
-        def refrescar_dialog_combo():
-            combo_existentes.clear()
-            cats = obtener_categorias_usuario(self.nombre_usuario)
-            if not cats:
-                combo_existentes.addItem(t("No tienes carpetas creadas"))
-                btn_eliminar_cat.setEnabled(False)
-            else:
-                btn_eliminar_cat.setEnabled(True)
-                for c in cats:
-                    combo_existentes.addItem(c)
-
-        refrescar_dialog_combo()
 
         def on_crear():
             nombre = txt_nueva.text().strip()
             if not nombre:
-                QMessageBox.warning(dlg, t("Aviso"), t("Ingresa un nombre para la carpeta."))
+                QMessageBox.warning(dlg, t("Aviso"), t("Ingresa un nombre para la colección."))
                 return
             if crear_categoria_usuario(self.nombre_usuario, nombre):
-                txt_nueva.clear()
-                refrescar_dialog_combo()
+                self.carpeta_activa = nombre
                 self.cargar_categorias_combo()
-                show_toast(f"Carpeta '{nombre}' creada", "info")
-            else:
-                QMessageBox.warning(dlg, t("Aviso"), t("Ya existe una carpeta con ese nombre."))
-
-        def on_eliminar():
-            nombre = combo_existentes.currentText()
-            if not nombre or nombre == t("No tienes carpetas creadas"):
-                return
-            resp = QMessageBox.question(
-                dlg,
-                t("Eliminar Carpeta"),
-                f"{t('¿Deseas eliminar la carpeta')} '{nombre}'? {t('Las cartas seguirán en tu colección general.')}",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-            )
-            if resp == QMessageBox.StandardButton.Yes:
-                eliminar_categoria_usuario(self.nombre_usuario, nombre)
-                refrescar_dialog_combo()
-                self.cargar_categorias_combo()
+                self.actualizar_valor_total()
                 self.reset_page_and_actualizar()
-                show_toast(f"Carpeta '{nombre}' eliminada", "info")
+                show_toast(f"Colección '{nombre}' creada", "success")
+                dlg.accept()
+            else:
+                QMessageBox.warning(dlg, t("Aviso"), t("Ya existe una colección con ese nombre."))
 
         btn_crear.clicked.connect(on_crear)
-        btn_eliminar_cat.clicked.connect(on_eliminar)
+        txt_nueva.returnPressed.connect(on_crear)
 
-        btn_cerrar = QPushButton(t("Cerrar"))
-        btn_cerrar.setFixedHeight(34)
-        btn_cerrar.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_cerrar.setStyleSheet("""
-            QPushButton {
-                background-color: #ffffff;
-                color: #703043;
-                border: 2px solid #f2c4ce;
-                border-radius: 10px;
-                font-weight: 600;
-            }
-            QPushButton:hover { background-color: #ffeef2; }
-        """)
-        btn_cerrar.clicked.connect(dlg.accept)
+        btn_row.addWidget(btn_cerrar)
+        btn_row.addWidget(btn_crear)
         layout.addStretch()
-        layout.addWidget(btn_cerrar)
+        layout.addLayout(btn_row)
 
         dlg.exec()
+
+    def _confirmar_dialogo_continuar(self, titulo: str, mensaje: str) -> bool:
+        """Diálogo de confirmación con botones Cancelar y Continuar."""
+        box = QMessageBox(self)
+        box.setWindowTitle(titulo)
+        box.setText(mensaje)
+        box.setIcon(QMessageBox.Icon.Warning)
+        btn_cancel = box.addButton(t("Cancelar"), QMessageBox.ButtonRole.RejectRole)
+        btn_cont = box.addButton(t("Continuar"), QMessageBox.ButtonRole.AcceptRole)
+        box.setDefaultButton(btn_cancel)
+        box.exec()
+        return box.clickedButton() == btn_cont
+
+    def eliminar_coleccion_activa(self):
+        """Elimina la colección en la que el usuario está posicionado con doble advertencia (Issue #33)."""
+        if not self.carpeta_activa:
+            return
+        nombre = self.carpeta_activa
+
+        # 1ª confirmación
+        if not self._confirmar_dialogo_continuar(
+            t("Eliminar Colección"),
+            f"¿Estás seguro de que deseas eliminar la colección '{nombre}'?\n"
+            f"(Las cartas seguirán disponibles en la colección 'Todas')."
+        ):
+            return
+
+        # 2ª advertencia irreversible
+        if not self._confirmar_dialogo_continuar(
+            t("Advertencia"),
+            f"Esta acción es irreversible.\n¿Deseas continuar y eliminar permanentemente la colección '{nombre}'?"
+        ):
+            return
+
+        from MyQtApp.app.db_services import eliminar_categoria_usuario
+        eliminar_categoria_usuario(self.nombre_usuario, nombre)
+        self.carpeta_activa = None
+        self.cargar_categorias_combo()
+        self.actualizar_valor_total()
+        self.reset_page_and_actualizar()
+        show_toast(f"Colección '{nombre}' eliminada", "info")
+
+    def asignar_cartas_a_coleccion(self):
+        """Asigna las cartas seleccionadas en la vista actual a una colección creada por el usuario (Issue #32)."""
+        if not self.cartas_seleccionadas:
+            show_toast("Selecciona al menos una carta para asignar a una colección.", "warning", 2200)
+            return
+
+        from MyQtApp.app.db_services import obtener_categorias_usuario
+        cats = obtener_categorias_usuario(self.nombre_usuario)
+        if not cats:
+            show_toast("Primero crea una colección con '+ Nueva Colección'.", "info", 2500)
+            return
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle(t("Asignar a colección"))
+        dlg.setFixedSize(360, 175)
+        dlg.setStyleSheet("""
+            QDialog { background-color: #fff5f7; }
+            QLabel { font-weight: 600; color: #5a2a3a; font-size: 13px; }
+            QComboBox {
+                border: 2px solid #f7a8b8; border-radius: 10px;
+                padding: 6px 10px; background-color: #ffffff; color: #5a2a3a; font-size: 13px;
+            }
+        """)
+        lay = QVBoxLayout(dlg)
+        lay.setContentsMargins(20, 18, 20, 18)
+        lay.setSpacing(10)
+        lay.addWidget(QLabel(t("Elige la colección de destino:")))
+        combo = QComboBox()
+        for c in cats:
+            combo.addItem(c, c)
+        lay.addWidget(combo)
+
+        brow = QHBoxLayout()
+        btn_c = QPushButton(t("Cancelar"))
+        btn_c.setFixedHeight(34)
+        btn_c.clicked.connect(dlg.reject)
+        btn_ok = QPushButton(t("Asignar"))
+        btn_ok.setFixedHeight(34)
+        btn_ok.setStyleSheet("background-color: #f56b7b; color: white; font-weight: 700; border-radius: 9px; padding: 2px 14px;")
+        btn_ok.clicked.connect(dlg.accept)
+        brow.addWidget(btn_c)
+        brow.addWidget(btn_ok)
+        lay.addStretch()
+        lay.addLayout(brow)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        destino = combo.currentData()
+        actualizadas = 0
+        try:
+            for key in list(self.cartas_seleccionadas):
+                if ":" in key:
+                    id_api, lang = key.split(":", 1)
+                else:
+                    id_api, lang = key, None
+                q = self.session.query(UsuarioCarta).filter(
+                    UsuarioCarta.usuario_nombre == self.nombre_usuario,
+                    UsuarioCarta.carta_id == id_api,
+                )
+                if lang:
+                    q = q.filter(func.coalesce(UsuarioCarta.idioma, "es") == lang)
+                rel = q.first()
+                if rel:
+                    rel.categoria = destino
+                    actualizadas += 1
+            self.session.commit()
+        except Exception as e:
+            self.session.rollback()
+            print(f"Error asignando cartas a colección: {e}")
+
+        self.limpiar_seleccion()
+        self.actualizar_valor_total()
+        self.reset_page_and_actualizar()
+        show_toast(f"{actualizadas} carta(s) asignada(s) a '{destino}'", "success")
+
+    def quitar_cartas_de_coleccion(self):
+        """Quita las cartas seleccionadas de la colección actual (seguirán existiendo en 'Todas') (Issue #32)."""
+        if not self.carpeta_activa:
+            return
+        if not self.cartas_seleccionadas:
+            show_toast("Selecciona al menos una carta para quitar de esta colección.", "warning", 2200)
+            return
+
+        actualizadas = 0
+        try:
+            for key in list(self.cartas_seleccionadas):
+                if ":" in key:
+                    id_api, lang = key.split(":", 1)
+                else:
+                    id_api, lang = key, None
+                q = self.session.query(UsuarioCarta).filter(
+                    UsuarioCarta.usuario_nombre == self.nombre_usuario,
+                    UsuarioCarta.carta_id == id_api,
+                    UsuarioCarta.categoria == self.carpeta_activa,
+                )
+                if lang:
+                    q = q.filter(func.coalesce(UsuarioCarta.idioma, "es") == lang)
+                rel = q.first()
+                if rel:
+                    rel.categoria = None
+                    actualizadas += 1
+            self.session.commit()
+        except Exception as e:
+            self.session.rollback()
+            print(f"Error quitando cartas de colección: {e}")
+
+        col_name = self.carpeta_activa
+        self.limpiar_seleccion()
+        self.actualizar_valor_total()
+        self.reset_page_and_actualizar()
+        show_toast(f"{actualizadas} carta(s) quitada(s) de '{col_name}'", "info")
 
     def limpiar_filtros(self):
         self.buscador.blockSignals(True)
@@ -479,6 +671,7 @@ class GaleriaCartasInventario(QWidget):
     def reset_page_and_actualizar(self):
         self.current_page = 0
         self.actualizar_total_cartas()
+        self.actualizar_valor_total()
         self.actualizar_con_transicion()
 
     def _get_filter_value(self, combo):
@@ -808,7 +1001,8 @@ class GaleriaCartasInventario(QWidget):
         self.actualizar_galeria()
 
     def actualizar_valor_total(self):
-        res = (
+        """Calcula el valor acumulado de la colección actualmente seleccionada ('Todas' o una sub-colección) (Issue #37)."""
+        q = (
             self.session.query(func.sum(Cartas.price))
             .join(
                 UsuarioCarta,
@@ -821,7 +1015,13 @@ class GaleriaCartasInventario(QWidget):
                 UsuarioCarta.usuario_nombre == self.nombre_usuario,
                 Cartas.price > 0,
             )
-            .scalar()
         )
+        if self.carpeta_activa:
+            q = q.filter(UsuarioCarta.categoria == self.carpeta_activa)
+
+        res = q.scalar()
         total_val = float(res) if res else 0.0
-        self.lbl_valor_total.setText(f"{t('Valor Inventario')} ${total_val:,.2f} USD")
+        if self.carpeta_activa:
+            self.lbl_valor_total.setText(f"{t('Valor')} ({self.carpeta_activa}): ${total_val:,.2f} USD")
+        else:
+            self.lbl_valor_total.setText(f"{t('Valor Colección')} ({t('Todas')}): ${total_val:,.2f} USD")

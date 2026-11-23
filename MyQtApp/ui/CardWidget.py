@@ -108,10 +108,20 @@ class VariantBadgeButton(QPushButton):
 
     def open_variant_menu(self):
         menu = QMenu(self)
+        from PyQt6.QtGui import QPalette
+        pal = menu.palette()
+        pal.setColor(QPalette.ColorRole.Window, QColor("#0f172a"))
+        pal.setColor(QPalette.ColorRole.Base, QColor("#0f172a"))
+        pal.setColor(QPalette.ColorRole.WindowText, QColor("#ffffff"))
+        pal.setColor(QPalette.ColorRole.Text, QColor("#ffffff"))
+        pal.setColor(QPalette.ColorRole.ButtonText, QColor("#ffffff"))
+        pal.setColor(QPalette.ColorRole.Highlight, QColor("#e25b70"))
+        pal.setColor(QPalette.ColorRole.HighlightedText, QColor("#ffffff"))
+        menu.setPalette(pal)
         menu.setStyleSheet("""
             QMenu {
                 background-color: #0f172a;
-                color: #f8fafc;
+                color: #ffffff;
                 border: 1.5px solid #f29ca4;
                 border-radius: 8px;
                 padding: 4px;
@@ -120,7 +130,8 @@ class VariantBadgeButton(QPushButton):
             QMenu::item {
                 padding: 5px 18px 5px 8px;
                 border-radius: 5px;
-                color: #f8fafc;
+                color: #ffffff;
+                background-color: transparent;
             }
             QMenu::item:selected {
                 background-color: #e25b70;
@@ -128,6 +139,7 @@ class VariantBadgeButton(QPushButton):
             }
             QMenu::item:checked {
                 font-weight: bold;
+                color: #ffffff;
                 background-color: rgba(242, 156, 164, 0.25);
             }
         """)
@@ -1160,7 +1172,7 @@ class CardDetailDialog(QDialog):
                 self.lbl_summary.setText(f"Precio base registrado en BD: ${float(base_price):.2f} USD")
             else:
                 self.lbl_summary.setText(t("Sin cotizaciones guardadas aún. Consultando mercados..."))
-            lbl_empty = QLabel(t("Presiona 'Actualizar precios en vivo' para consultar TCGPlayer, Cardmarket, PokemonTCG y TCGCSV."))
+            lbl_empty = QLabel(t("Presiona 'Actualizar precios en vivo' para consultar TCGPlayer, TCGMatch, PokemonTCG y TCGCSV."))
             lbl_empty.setWordWrap(True)
             lbl_empty.setStyleSheet("font-size: 12px; color: #8c5464; padding: 12px;")
             self.prices_layout.addWidget(lbl_empty)

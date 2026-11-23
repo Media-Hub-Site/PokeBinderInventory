@@ -1,4 +1,5 @@
 import math
+import os
 from PyQt6.QtWidgets import QWidget
 from PyQt6.QtCore import Qt, QRectF, QPointF, QVariantAnimation, QEasingCurve, pyqtSignal
 from PyQt6.QtGui import (
@@ -6,9 +7,31 @@ from PyQt6.QtGui import (
     QPen, QFont, QPixmap, QPolygonF, QFontMetrics
 )
 
-from MyQtApp.config import load_settings, scale_anim_duration
-from MyQtApp.ui.BinderCoverWidget import BINDER_DESIGNS, resolve_design_key, _load_theme_artwork as _load_artwork
+from MyQtApp.config import USER_DATA_DIR, load_settings, scale_anim_duration
+from MyQtApp.ui.BinderCoverWidget import (
+    BINDER_DESIGNS, BINDER_COVERS_DIR, resolve_design_key, _load_theme_artwork as _load_artwork
+)
 from MyQtApp.ui.BinderBookAnimations import play_page_turn_sound
+
+
+DECK_COVERS_DIR = os.path.join(USER_DATA_DIR, "deck_covers")
+
+
+def resolve_custom_deck_pixmap(image_path: str | None) -> QPixmap | None:
+    """Carga una imagen personalizada de portada para Portamazos (ruta absoluta o relativa en deck_covers)."""
+    if not image_path:
+        return None
+    candidates = [image_path]
+    if not os.path.isabs(image_path):
+        candidates.append(os.path.join(DECK_COVERS_DIR, image_path))
+        candidates.append(os.path.join(BINDER_COVERS_DIR, image_path))
+        candidates.append(os.path.join(USER_DATA_DIR, image_path))
+    for path in candidates:
+        if path and os.path.exists(path):
+            pix = QPixmap(path)
+            if not pix.isNull():
+                return pix
+    return None
 
 
 class DeckBoxWidget(QWidget):
@@ -16,7 +39,7 @@ class DeckBoxWidget(QWidget):
     Portamazos físico 3D realista estilo Ultra PRO Alcove Flip Deck Box para Pokémon TCG:
     - Cuerpo rígido de cuero sintético con profundidad lateral 3D
     - Tapa superior magnética abatible (flap en V) con costuras y broche
-    - Ilustración Pokémon o emblema vectorial personalizable (mismos temas que Binder)
+    - Ilustración Pokémon, imagen personalizada (con soporte PNG transparente) o emblema vectorial
     - Color personalizado opcional
     - Placa inferior con nombre del mazo y contador de cartas (X / 60)
     - Animación suave Bookshelf Peek al pasar el mouse
@@ -29,6 +52,7 @@ class DeckBoxWidget(QWidget):
         color: str = "auto",
         card_count: int = 0,
         locked: bool = False,
+        custom_image: str = None,
         parent=None,
     ):
         super().__init__(parent)
@@ -37,13 +61,15 @@ class DeckBoxWidget(QWidget):
         self._custom_color = color
         self._card_count = int(card_count)
         self._locked = bool(locked)
+        self._custom_image = custom_image or None
+        self._custom_pixmap = resolve_custom_deck_pixmap(self._custom_image)
         self._hovered = False
         self._hover_progress = 0.0
         self._hover_anim = None
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setMinimumSize(145, 185)
 
-    def set_deck_props(self, name=None, design=None, color=None, card_count=None, locked=None):
+    def set_deck_props(self, name=None, design=None, color=None, card_count=None, locked=None, custom_image="UNSET"):
         if name is not None:
             self._name = name or "Mi Mazo"
         if design is not None:
@@ -54,6 +80,9 @@ class DeckBoxWidget(QWidget):
             self._card_count = int(card_count)
         if locked is not None:
             self._locked = bool(locked)
+        if custom_image != "UNSET":
+            self._custom_image = custom_image or None
+            self._custom_pixmap = resolve_custom_deck_pixmap(self._custom_image)
         self.update()
 
     def set_hovered(self, hovered: bool):
@@ -90,6 +119,8 @@ class DeckBoxWidget(QWidget):
             if c.isValid():
                 base = c
                 spine = c.darker(150)
+                accent = c.lighter(135)
+                accent2 = c.lighter(155)
         return cfg, base, spine, accent, accent2
 
     def paintEvent(self, event):
@@ -221,10 +252,22 @@ class DeckBoxWidget(QWidget):
         accent_band.closeSubpath()
         painter.fillPath(accent_band, QColor(accent.red(), accent.green(), accent.blue(), 75))
 
-        # Ilustración Pokémon o emblema vectorial en el cuerpo frontal
+        # Ilustración Pokémon, imagen personalizada o emblema vectorial en el cuerpo frontal
         art_rect = QRectF(bx + 12, by + flap_h * 0.72, box_w - 24, box_h * 0.44)
         kind = cfg.get("kind", "artwork")
-        if kind == "artwork":
+        if self._custom_pixmap and not self._custom_pixmap.isNull():
+            # Imagen personalizada dibujada encima del color base completo (soporta PNG transparente)
+            target_rect = QRectF(bx + 10, by + flap_h * 0.68, box_w - 20, box_h * 0.48)
+            scaled_custom = self._custom_pixmap.scaled(
+                int(max(16, target_rect.width())),
+                int(max(16, target_rect.height())),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            ax = target_rect.center().x() - scaled_custom.width() / 2.0
+            ay = target_rect.center().y() - scaled_custom.height() / 2.0
+            painter.drawPixmap(QPointF(ax, ay), scaled_custom)
+        elif kind == "artwork":
             art_pix = _load_artwork(cfg.get("artwork"))
             if art_pix and not art_pix.isNull():
                 # Medallón suave detrás del Pokémon
@@ -403,12 +446,19 @@ class DeckBoxOpenAnimationOverlay(QWidget):
         reverse: bool = False,
         shelf_pixmap: QPixmap | None = None,
         editor_pixmap: QPixmap | None = None,
+        custom_image: str | None = None,
     ):
         super().__init__(parent)
         self.setGeometry(parent.rect())
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
 
-        self._deck_renderer = DeckBoxWidget(name=name, design=design, color=color, card_count=card_count)
+        self._deck_renderer = DeckBoxWidget(
+            name=name,
+            design=design,
+            color=color,
+            card_count=card_count,
+            custom_image=custom_image,
+        )
         self.origin_rect = QRectF(origin_rect) if origin_rect else None
         self.reverse = bool(reverse)
         self.shelf_pixmap = shelf_pixmap

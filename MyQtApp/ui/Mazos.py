@@ -1,10 +1,13 @@
 import json
 import os
 import re
+import shutil
+import time
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QScrollArea, QFrame, QMessageBox, QDialog, QStackedWidget, QGridLayout,
-    QComboBox, QColorDialog, QApplication, QSizePolicy, QMenu
+    QComboBox, QColorDialog, QApplication, QSizePolicy, QMenu,
+    QFileDialog, QTabWidget
 )
 from PyQt6.QtGui import QPixmap, QColor, QDrag, QAction, QPalette
 from PyQt6.QtCore import Qt, QPoint, QRect, QRectF, QMimeData, QTimer, pyqtSignal
@@ -22,7 +25,7 @@ from MyQtApp.i18n import t, language_manager
 from MyQtApp.ui.toast import show_toast
 from MyQtApp.ui.CardWidget import CardZoomOverlay
 from MyQtApp.ui.BinderCoverWidget import BINDER_DESIGNS, resolve_design_key
-from MyQtApp.ui.DeckBoxWidget import DeckBoxWidget, DeckBoxOpenAnimationOverlay
+from MyQtApp.ui.DeckBoxWidget import DeckBoxWidget, DeckBoxOpenAnimationOverlay, DECK_COVERS_DIR
 from MyQtApp.ui.FilterVisualBar import EnergyTypeFilterBar
 
 
@@ -401,49 +404,126 @@ class DraggableCollectionCardWidget(QFrame):
 
 
 class DeckBoxCustomizeDialog(QDialog):
-    """Diálogo con vista previa 3D en tiempo real para crear o personalizar un Portamazos."""
+    """Diálogo con vista previa 3D en tiempo real para crear o personalizar un Portamazos (Predefinidos / Personalizar)."""
 
-    def __init__(self, title="Crear Nuevo Portamazos", name="", design="Charizard Fuego", color="auto", card_count=0, parent=None):
+    def __init__(
+        self,
+        title="Crear Nuevo Portamazos",
+        name="",
+        design="Charizard Fuego",
+        color="auto",
+        card_count=0,
+        custom_image=None,
+        editing=False,
+        parent=None,
+    ):
         super().__init__(parent)
         self.setWindowTitle(t(title))
-        self.setFixedSize(560, 360)
-        self._selected_color = color or "auto"
+        self.setFixedSize(640, 420)
+
+        default_design = resolve_design_key(design or list(BINDER_DESIGNS.keys())[0])
+        init_color = color or "auto"
+        init_custom_image = custom_image or None
+        is_custom_initially = bool(
+            editing and (init_custom_image or (init_color and str(init_color).lower() not in ("", "auto", "#ffeef2")))
+        )
+
+        self._state = {
+            "custom_color": init_color if (init_color and str(init_color).lower() not in ("", "auto", "#ffeef2")) else "#1e1b26",
+            "custom_image": init_custom_image,
+        }
+        self._final_values = (name, default_design, init_color, init_custom_image)
 
         self.setStyleSheet("""
             QDialog { background-color: #fff5f7; }
             QLabel { font-weight: 600; color: #5a2a3a; font-size: 12px; }
             QLineEdit, QComboBox {
-                border: 1.5px solid #f29ca4;
-                border-radius: 8px;
+                border: 2px solid #f7a8b8;
+                border-radius: 9px;
                 padding: 6px 10px;
                 background: #ffffff;
                 color: #3f2730;
                 font-size: 12px;
             }
+            QLineEdit:focus, QComboBox:focus {
+                border-color: #f56b7b;
+            }
+            QComboBox QAbstractItemView {
+                background-color: #0f172a;
+                color: #ffffff;
+                selection-background-color: #e25b70;
+                selection-color: #ffffff;
+                border: 1px solid #f29ca4;
+                outline: 0;
+            }
+            QTabWidget::pane {
+                border: 1.5px solid #f2c4ce;
+                border-radius: 10px;
+                background-color: #ffffff;
+                padding: 6px;
+            }
+            QTabBar::tab {
+                background-color: #ffeef2;
+                color: #703043;
+                border: 1.5px solid #f2c4ce;
+                border-bottom: none;
+                border-top-left-radius: 8px;
+                border-top-right-radius: 8px;
+                padding: 6px 16px;
+                font-weight: 700;
+                font-size: 12px;
+                margin-right: 4px;
+            }
+            QTabBar::tab:selected {
+                background-color: #f56b7b;
+                color: #ffffff;
+                border-color: #e25b70;
+            }
         """)
 
         root = QHBoxLayout(self)
         root.setContentsMargins(20, 18, 20, 18)
-        root.setSpacing(20)
+        root.setSpacing(18)
 
-        preview_col = QVBoxLayout()
-        preview_col.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # --- Columna Izquierda: Vista previa 3D física en vivo ---
+        preview_panel = QFrame()
+        preview_panel.setFixedWidth(218)
+        preview_panel.setStyleSheet("""
+            QFrame {
+                background-color: #ffffff;
+                border: 1.5px solid #f2c4ce;
+                border-radius: 14px;
+            }
+        """)
+        preview_col = QVBoxLayout(preview_panel)
+        preview_col.setContentsMargins(12, 12, 12, 12)
+        preview_col.setSpacing(8)
+
         lbl_prev = QLabel(t("Vista previa 3D"))
         lbl_prev.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lbl_prev.setStyleSheet("font-size: 12px; font-weight: 700; color: #8c5464; border: none; background: transparent;")
         preview_col.addWidget(lbl_prev)
 
         self.preview_box = DeckBoxWidget(
             name=name or "Mi Mazo",
-            design=design,
-            color=self._selected_color,
+            design=default_design,
+            color=init_color,
             card_count=card_count,
+            custom_image=init_custom_image,
+            parent=preview_panel,
         )
-        self.preview_box.setFixedSize(195, 240)
+        self.preview_box.setFixedSize(192, 240)
         preview_col.addWidget(self.preview_box, alignment=Qt.AlignmentFlag.AlignCenter)
-        root.addLayout(preview_col)
+        preview_col.addStretch()
+        root.addWidget(preview_panel)
 
+        # --- Columna Derecha: Formulario con Predefinidos / Personalizar ---
         form_col = QVBoxLayout()
-        form_col.setSpacing(10)
+        form_col.setSpacing(8)
+
+        lbl_heading = QLabel(t("Editar Portamazos") if editing else t("Configura tu Portamazos"))
+        lbl_heading.setStyleSheet("font-size: 16px; font-weight: 700; color: #5a2a3a;")
+        form_col.addWidget(lbl_heading)
 
         form_col.addWidget(QLabel(t("Nombre del Mazo")))
         self.input_name = QLineEdit(name)
@@ -451,46 +531,81 @@ class DeckBoxCustomizeDialog(QDialog):
         self.input_name.textChanged.connect(self._update_preview)
         form_col.addWidget(self.input_name)
 
-        form_col.addWidget(QLabel(t("Diseño del Portamazos")))
+        # Pestañas: Predefinidos vs Personalizar (Issue #50)
+        self.tabs = QTabWidget()
+
+        # -- Tab 1: Predefinidos --
+        tab_predef = QWidget()
+        tab_predef.setStyleSheet("background: transparent;")
+        predef_layout = QVBoxLayout(tab_predef)
+        predef_layout.setContentsMargins(10, 10, 10, 10)
+        predef_layout.setSpacing(8)
+
+        predef_layout.addWidget(QLabel(t("Diseño predefinido (asigna portada y colores)")))
         self.combo_design = QComboBox()
         for d_key in BINDER_DESIGNS.keys():
             self.combo_design.addItem(d_key, d_key)
-        idx = self.combo_design.findData(resolve_design_key(design))
+        self._style_combo_popup_white_text(self.combo_design)
+        idx = self.combo_design.findData(default_design)
         if idx >= 0:
             self.combo_design.setCurrentIndex(idx)
         self.combo_design.currentIndexChanged.connect(self._update_preview)
-        form_col.addWidget(self.combo_design)
+        predef_layout.addWidget(self.combo_design)
 
-        form_col.addWidget(QLabel(t("Color del Portamazos")))
-        color_row = QHBoxLayout()
-        color_row.setSpacing(8)
+        lbl_predef_hint = QLabel(
+            t("Cada diseño aplica automáticamente su color de portamazos e ilustración temática.")
+        )
+        lbl_predef_hint.setWordWrap(True)
+        lbl_predef_hint.setStyleSheet("font-size: 11px; font-weight: 400; color: #8c5464;")
+        predef_layout.addWidget(lbl_predef_hint)
+        predef_layout.addStretch()
+        self.tabs.addTab(tab_predef, t("Predefinidos"))
 
-        self.btn_color_auto = QPushButton(t("Automático del diseño"))
-        self.btn_color_auto.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_color_auto.setFixedHeight(32)
-        self.btn_color_auto.setStyleSheet("""
-            QPushButton {
-                background: #ffffff; color: #5a2a3a; border: 1.5px solid #f2b8c3;
-                border-radius: 8px; padding: 2px 10px; font-weight: 600;
-            }
-            QPushButton:hover { background: #ffdfe6; }
-        """)
-        self.btn_color_auto.clicked.connect(self._reset_color_auto)
-        color_row.addWidget(self.btn_color_auto)
+        # -- Tab 2: Personalizar --
+        tab_custom = QWidget()
+        tab_custom.setStyleSheet("background: transparent;")
+        custom_layout = QVBoxLayout(tab_custom)
+        custom_layout.setContentsMargins(10, 10, 10, 10)
+        custom_layout.setSpacing(8)
 
-        self.btn_color_pick = QPushButton(t("Elegir color"))
-        self.btn_color_pick.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_color_pick.setFixedHeight(32)
-        self.btn_color_pick.setStyleSheet("""
-            QPushButton {
-                background: #f7a8b8; color: #ffffff; border: 1.5px solid #f29ca4;
-                border-radius: 8px; padding: 2px 12px; font-weight: 700;
-            }
-            QPushButton:hover { background: #f56b7b; }
-        """)
-        self.btn_color_pick.clicked.connect(self._pick_custom_color)
-        color_row.addWidget(self.btn_color_pick)
-        form_col.addLayout(color_row)
+        custom_layout.addWidget(QLabel(t("Color completo del portamazos")))
+        self.btn_cover_color = QPushButton()
+        self.btn_cover_color.setFixedHeight(32)
+        self.btn_cover_color.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_cover_color.clicked.connect(self._pick_custom_color)
+        custom_layout.addWidget(self.btn_cover_color)
+
+        custom_layout.addWidget(QLabel(t("Imagen de portada (opcional, soporta PNG transparente)")))
+        img_row = QHBoxLayout()
+        img_row.setSpacing(8)
+
+        self.btn_pick_img = QPushButton(t("Elegir imagen..."))
+        self.btn_pick_img.setFixedHeight(32)
+        self.btn_pick_img.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_pick_img.setProperty("class", "pill")
+        self.btn_pick_img.clicked.connect(self._choose_custom_image)
+
+        self.btn_clear_img = QPushButton(t("Quitar imagen"))
+        self.btn_clear_img.setFixedHeight(32)
+        self.btn_clear_img.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_clear_img.setProperty("class", "pill")
+        self.btn_clear_img.clicked.connect(self._clear_custom_image)
+
+        img_row.addWidget(self.btn_pick_img, 1)
+        img_row.addWidget(self.btn_clear_img)
+        custom_layout.addLayout(img_row)
+
+        self.lbl_img_file = QLabel("")
+        self.lbl_img_file.setWordWrap(True)
+        self.lbl_img_file.setStyleSheet("font-size: 11px; font-weight: 400; color: #703043;")
+        custom_layout.addWidget(self.lbl_img_file)
+        custom_layout.addStretch()
+        self.tabs.addTab(tab_custom, t("Personalizar"))
+
+        if is_custom_initially:
+            self.tabs.setCurrentIndex(1)
+        self.tabs.currentChanged.connect(lambda _: self._update_preview())
+        form_col.addWidget(self.tabs)
 
         form_col.addStretch()
 
@@ -508,7 +623,7 @@ class DeckBoxCustomizeDialog(QDialog):
         """)
         btn_cancel.clicked.connect(self.reject)
 
-        btn_ok = QPushButton(t("Guardar"))
+        btn_ok = QPushButton(t("Guardar Cambios") if editing else t("Crear Portamazos"))
         btn_ok.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_ok.setFixedHeight(34)
         btn_ok.setStyleSheet("""
@@ -525,37 +640,121 @@ class DeckBoxCustomizeDialog(QDialog):
         form_col.addLayout(btns)
 
         root.addLayout(form_col, 1)
-
-    def _reset_color_auto(self):
-        self._selected_color = "auto"
         self._update_preview()
 
+    @staticmethod
+    def _style_combo_popup_white_text(cb: QComboBox):
+        view = cb.view()
+        if view is not None:
+            pal = view.palette()
+            pal.setColor(QPalette.ColorRole.Base, QColor("#0f172a"))
+            pal.setColor(QPalette.ColorRole.Window, QColor("#0f172a"))
+            pal.setColor(QPalette.ColorRole.Text, QColor("#ffffff"))
+            pal.setColor(QPalette.ColorRole.WindowText, QColor("#ffffff"))
+            pal.setColor(QPalette.ColorRole.ButtonText, QColor("#ffffff"))
+            pal.setColor(QPalette.ColorRole.Highlight, QColor("#e25b70"))
+            pal.setColor(QPalette.ColorRole.HighlightedText, QColor("#ffffff"))
+            view.setPalette(pal)
+        for i in range(cb.count()):
+            cb.setItemData(i, QColor("#ffffff"), Qt.ItemDataRole.ForegroundRole)
+
+    @staticmethod
+    def _contrast_text(hex_col: str) -> str:
+        c = QColor(hex_col)
+        if not c.isValid():
+            return "#ffffff"
+        luma = 0.299 * c.red() + 0.587 * c.green() + 0.114 * c.blue()
+        return "#1e293b" if luma > 160 else "#ffffff"
+
     def _pick_custom_color(self):
-        initial = QColor(self._selected_color) if self._selected_color != "auto" else QColor("#dc2626")
+        initial = QColor(self._state["custom_color"])
         col = QColorDialog.getColor(initial, self, t("Color personalizado del Portamazos"))
         if col.isValid():
-            self._selected_color = col.name()
+            self._state["custom_color"] = col.name()
             self._update_preview()
 
-    def _update_preview(self):
-        self.preview_box.set_deck_props(
-            name=self.input_name.text().strip() or "Mi Mazo",
-            design=self.combo_design.currentData(),
-            color=self._selected_color,
+    def _choose_custom_image(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            t("Seleccionar imagen para portada del Portamazos"),
+            "",
+            "Imágenes (*.png *.jpg *.jpeg *.webp *.bmp)",
         )
+        if file_path and os.path.exists(file_path):
+            self._state["custom_image"] = file_path
+            self._update_preview()
+
+    def _clear_custom_image(self):
+        self._state["custom_image"] = None
+        self._update_preview()
+
+    def _update_preview(self):
+        is_custom = self.tabs.currentIndex() == 1
+        cc = self._state["custom_color"]
+        self.btn_cover_color.setText(f"{t('Color del portamazos')}: {cc.upper()}")
+        self.btn_cover_color.setStyleSheet(
+            f"background-color: {cc}; color: {self._contrast_text(cc)}; "
+            f"border: 2px solid #5a2a3a; border-radius: 9px; font-weight: 700;"
+        )
+
+        if self._state["custom_image"]:
+            self.lbl_img_file.setText(f"{t('Imagen')}: {os.path.basename(self._state['custom_image'])}")
+            self.btn_clear_img.setEnabled(True)
+        else:
+            self.lbl_img_file.setText(t("Sin imagen personalizada (se usará color liso minimalista)"))
+            self.btn_clear_img.setEnabled(False)
+
+        if is_custom:
+            self.preview_box.set_deck_props(
+                name=self.input_name.text().strip() or "Mi Mazo",
+                design="Ultra PRO Minimalista",
+                color=cc,
+                custom_image=self._state["custom_image"],
+            )
+        else:
+            self.preview_box.set_deck_props(
+                name=self.input_name.text().strip() or "Mi Mazo",
+                design=self.combo_design.currentData(),
+                color="auto",
+                custom_image=None,
+            )
 
     def _validate_and_accept(self):
-        if not self.input_name.text().strip():
+        nombre = self.input_name.text().strip()
+        if not nombre:
             QMessageBox.warning(self, t("Nombre requerido"), t("Ingresa un nombre para el mazo."))
             return
+
+        is_custom = self.tabs.currentIndex() == 1
+        final_design = "Ultra PRO Minimalista" if is_custom else self.combo_design.currentData()
+        final_color = self._state["custom_color"] if is_custom else "auto"
+
+        # Persistir imagen personalizada en DECK_COVERS_DIR para que no se pierda si mueven el archivo original
+        final_custom_image = None
+        if is_custom and self._state["custom_image"]:
+            src_path = self._state["custom_image"]
+            if os.path.isabs(src_path) and os.path.exists(src_path):
+                try:
+                    os.makedirs(DECK_COVERS_DIR, exist_ok=True)
+                    abs_covers = os.path.abspath(DECK_COVERS_DIR)
+                    if os.path.abspath(src_path).startswith(abs_covers):
+                        final_custom_image = os.path.basename(src_path)
+                    else:
+                        ext = os.path.splitext(src_path)[1].lower() or ".png"
+                        fname = f"deck_cover_{int(time.time() * 1000)}{ext}"
+                        shutil.copy2(src_path, os.path.join(DECK_COVERS_DIR, fname))
+                        final_custom_image = fname
+                except Exception as e:
+                    print(f"Error copiando imagen personalizada de portamazos: {e}")
+                    final_custom_image = src_path
+            else:
+                final_custom_image = src_path
+
+        self._final_values = (nombre, final_design, final_color, final_custom_image)
         self.accept()
 
-    def get_values(self) -> tuple[str, str, str]:
-        return (
-            self.input_name.text().strip(),
-            self.combo_design.currentData(),
-            self._selected_color,
-        )
+    def get_values(self) -> tuple[str, str, str, str | None]:
+        return self._final_values
 
 
 class MazosView(QWidget):
@@ -591,28 +790,36 @@ class MazosView(QWidget):
         self.col_coleccion_activa = None  # None significa "Todas"
         self.col_orden_activo = None      # "rarity" | "type" | "idioma" | None
         self.col_widgets_by_key = {}  # card_key -> list[DraggableCollectionCardWidget]
+        self._col_ordered_widgets = []
+        self._last_col_grid_cols = 0
+        self._col_resize_timer = QTimer(self)
+        self._col_resize_timer.setSingleShot(True)
+        self._col_resize_timer.timeout.connect(self._check_col_grid_reflow)
         self.col_image_loader = CardImageLoaderManager(max_threads=6, parent=self)
         self.col_image_loader.image_ready.connect(self._on_col_async_image_ready)
 
         self.init_ui()
         self.mostrar_estanteria_mazos(animate_close=False)
 
-    def _get_deck_style(self, mazo_id: int) -> tuple[str, str, bool]:
+    def _get_deck_style(self, mazo_id: int) -> tuple[str, str, bool, str | None]:
         entry = self._deck_styles.get(str(mazo_id))
         if isinstance(entry, dict):
             design = resolve_design_key(entry.get("design", "Charizard Fuego"))
             color = entry.get("color", "auto")
             locked = bool(entry.get("locked", False))
-            return design, color, locked
+            custom_image = entry.get("custom_image") or None
+            return design, color, locked, custom_image
         default_design = _DEFAULT_DESIGN_KEYS[int(mazo_id) % len(_DEFAULT_DESIGN_KEYS)]
-        return default_design, "auto", False
+        return default_design, "auto", False, None
 
-    def _set_deck_style(self, mazo_id: int, design: str, color: str, locked: bool = None):
+    def _set_deck_style(self, mazo_id: int, design: str, color: str, locked: bool = None, custom_image="UNSET"):
         entry = self._deck_styles.setdefault(str(mazo_id), {})
         entry["design"] = resolve_design_key(design)
         entry["color"] = color or "auto"
         if locked is not None:
             entry["locked"] = bool(locked)
+        if custom_image != "UNSET":
+            entry["custom_image"] = custom_image or None
         _save_deck_box_styles(self._deck_styles)
 
     def _is_deck_locked(self, mazo_id: int) -> bool:
@@ -1121,13 +1328,66 @@ class MazosView(QWidget):
             self.col_page += 1
             self.cargar_coleccion_navegador()
 
+    def _compute_col_grid_cols(self, card_w: int, default_cols: int) -> int:
+        """Calcula cuántas columnas caben realmente en el viewport del navegador de colección (Issue #51)."""
+        viewport_w = self.col_scroll.viewport().width() if hasattr(self, "col_scroll") else 0
+        stack_avail = (self.main_stack.width() - 68) if hasattr(self, "main_stack") else 0
+        effective_w = viewport_w if viewport_w > 200 else max(viewport_w, stack_avail)
+        if effective_w <= 200:
+            return default_cols
+        spacing = self.col_grid.horizontalSpacing()
+        if spacing < 0:
+            spacing = 10
+        m_left, _, m_right, _ = self.col_grid.getContentsMargins()
+        inner_w = max(100, effective_w - m_left - m_right - 4)
+        tile_w = (card_w + 8) + spacing
+        return max(3, (inner_w + spacing) // tile_w)
+
+    def _check_col_grid_reflow(self):
+        """Reacomoda las tarjetas ya creadas si el ancho disponible cambió (Issue #51)."""
+        if not self._col_ordered_widgets:
+            return
+        if self.main_stack.currentWidget() is not self.deck_editor_widget:
+            return
+        card_size, default_cols = self._get_deck_card_size_and_cols()
+        cols = self._compute_col_grid_cols(card_size[0], default_cols)
+        if cols == self._last_col_grid_cols:
+            return
+        self._last_col_grid_cols = cols
+
+        while self.col_grid.count():
+            self.col_grid.takeAt(0)
+
+        row, col = 0, 0
+        alive = []
+        for cw in self._col_ordered_widgets:
+            try:
+                _ = cw.isVisible()
+            except RuntimeError:
+                continue
+            self.col_grid.addWidget(cw, row, col)
+            alive.append(cw)
+            col += 1
+            if col >= cols:
+                col = 0
+                row += 1
+        self._col_ordered_widgets = alive
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "main_stack") and self.main_stack.currentWidget() is self.deck_editor_widget:
+            self._col_resize_timer.start(60)
+
     def cargar_coleccion_navegador(self):
-        """Carga las cartas de la colección del usuario con ajuste de vista y ordenamiento (Issues #45 y #46)."""
+        """Carga las cartas de la colección del usuario con ajuste de vista y ordenamiento (Issues #45, #46 y #51)."""
         self.col_widgets_by_key.clear()
+        self._col_ordered_widgets.clear()
         while self.col_grid.count():
             item = self.col_grid.takeAt(0)
             if item and item.widget():
                 item.widget().deleteLater()
+
+        self._update_zoom_buttons_style()
 
         q = (
             self.session.query(Cartas)
@@ -1170,13 +1430,8 @@ class MazosView(QWidget):
             .all()
         )
 
-        # Calcular columnas según el ancho visible del viewport (igual que en Buscar)
-        viewport_w = self.col_scroll.viewport().width()
-        tile_w = cw + 8 + 10  # ancho carta + padding + spacing
-        if viewport_w > 100:
-            cols = max(3, viewport_w // tile_w)
-        else:
-            cols = default_cols
+        cols = self._compute_col_grid_cols(cw, default_cols)
+        self._last_col_grid_cols = cols
 
         row, col = 0, 0
         for carta in cartas:
@@ -1203,6 +1458,7 @@ class MazosView(QWidget):
             )
             card_widget.quick_add_requested.connect(self._on_card_dropped_in_deck)
             self.col_grid.addWidget(card_widget, row, col)
+            self._col_ordered_widgets.append(card_widget)
             self.col_widgets_by_key.setdefault(card_key, []).append(card_widget)
 
             if needs_dl:
@@ -1384,7 +1640,7 @@ class MazosView(QWidget):
 
     def _crear_tarjeta_portamazos(self, mazo: Mazo) -> QFrame:
         total_qty = sum(mc.cantidad for mc in mazo.cartas)
-        design, color, locked = self._get_deck_style(mazo.id)
+        design, color, locked, custom_image = self._get_deck_style(mazo.id)
 
         frame = QFrame()
         frame.setFixedSize(222, 300)
@@ -1411,6 +1667,7 @@ class MazosView(QWidget):
             color=color,
             card_count=total_qty,
             locked=locked,
+            custom_image=custom_image,
             parent=frame,
         )
         deck_box.setFixedSize(198, 224)
@@ -1483,7 +1740,7 @@ class MazosView(QWidget):
             try:
                 closing_id = self.mazo_actual.id
                 closing_name = self.mazo_actual.nombre
-                design, color = self._get_deck_style(closing_id)
+                design, color, _locked, custom_image = self._get_deck_style(closing_id)
                 total_qty = sum(w.get_quantity() for w in self.deck_tiles.values())
 
                 editor_pix = self.deck_editor_widget.grab()
@@ -1519,6 +1776,7 @@ class MazosView(QWidget):
                     reverse=True,
                     shelf_pixmap=shelf_pix,
                     editor_pixmap=editor_pix,
+                    custom_image=custom_image,
                 )
                 self._active_overlay = ov
                 ov.animation_finished.connect(lambda: setattr(self, "_active_overlay", None))
@@ -1547,21 +1805,35 @@ class MazosView(QWidget):
                     origin_rect = None
 
         self.mazo_actual = mazo
-        design, color, locked = self._get_deck_style(mazo.id)
+        design, color, locked, custom_image = self._get_deck_style(mazo.id)
         total_qty = sum(mc.cantidad for mc in mazo.cartas)
-        self.editor_mini_box.set_deck_props(name=mazo.nombre, design=design, color=color, card_count=total_qty, locked=locked)
+        self.editor_mini_box.set_deck_props(
+            name=mazo.nombre,
+            design=design,
+            color=color,
+            card_count=total_qty,
+            locked=locked,
+            custom_image=custom_image,
+        )
         self.btn_customize_deck.setEnabled(not locked)
         self.cargar_cartas_de_mazo(mazo)
         self._cargar_opciones_filtros_coleccion()
         self.col_page = 0
-        self.cargar_coleccion_navegador()
+
+        # Mostrar y activar geometría del editor ANTES de poblar la cuadrícula para evitar espacios vacíos (Issue #51)
         self.main_stack.setCurrentWidget(self.deck_editor_widget)
+        if self.deck_editor_widget.layout():
+            self.deck_editor_widget.layout().activate()
+        QApplication.processEvents()
+
+        self.cargar_coleccion_navegador()
+        if self.deck_editor_widget.layout():
+            self.deck_editor_widget.layout().activate()
+        QApplication.processEvents()
+        QTimer.singleShot(0, self._check_col_grid_reflow)
 
         if animaciones_activas:
             try:
-                if self.deck_editor_widget.layout():
-                    self.deck_editor_widget.layout().activate()
-                QApplication.processEvents()
                 editor_pix = self.deck_editor_widget.grab()
 
                 if self._active_overlay:
@@ -1579,6 +1851,7 @@ class MazosView(QWidget):
                     reverse=False,
                     shelf_pixmap=shelf_pix,
                     editor_pixmap=editor_pix,
+                    custom_image=custom_image,
                 )
                 self._active_overlay = ov
                 ov.animation_finished.connect(lambda: setattr(self, "_active_overlay", None))
@@ -1586,13 +1859,13 @@ class MazosView(QWidget):
                 print(f"Error en animación de apertura de portamazos: {e}")
 
     def crear_nuevo_mazo(self):
-        dlg = DeckBoxCustomizeDialog(title="Crear Nuevo Portamazos", parent=self)
+        dlg = DeckBoxCustomizeDialog(title="Crear Nuevo Portamazos", editing=False, parent=self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            nombre, design, color = dlg.get_values()
+            nombre, design, color, custom_image = dlg.get_values()
             nuevo = Mazo(usuario_nombre=self.usuario, nombre=nombre)
             self.session.add(nuevo)
             self.session.commit()
-            self._set_deck_style(nuevo.id, design, color)
+            self._set_deck_style(nuevo.id, design, color, locked=False, custom_image=custom_image)
             self.cargar_mazos()
             show_toast(f"Portamazos '{nombre}' creado con éxito.", "success", 2500)
 
@@ -1603,7 +1876,7 @@ class MazosView(QWidget):
         mazo = self.session.query(Mazo).filter(Mazo.id == mazo_id).first()
         if not mazo:
             return
-        design, color = self._get_deck_style(mazo.id)
+        design, color, locked, custom_image = self._get_deck_style(mazo.id)
         total_qty = sum(mc.cantidad for mc in mazo.cartas)
         dlg = DeckBoxCustomizeDialog(
             title="Personalizar Portamazos",
@@ -1611,16 +1884,25 @@ class MazosView(QWidget):
             design=design,
             color=color,
             card_count=total_qty,
+            custom_image=custom_image,
+            editing=True,
             parent=self,
         )
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            new_name, new_design, new_color = dlg.get_values()
+            new_name, new_design, new_color, new_custom_image = dlg.get_values()
             mazo.nombre = new_name
             self.session.commit()
-            self._set_deck_style(mazo.id, new_design, new_color)
+            self._set_deck_style(mazo.id, new_design, new_color, locked=locked, custom_image=new_custom_image)
             if self.mazo_actual and self.mazo_actual.id == mazo.id:
                 self.lbl_mazo_nombre.setText(new_name)
-                self.editor_mini_box.set_deck_props(name=new_name, design=new_design, color=new_color, card_count=total_qty)
+                self.editor_mini_box.set_deck_props(
+                    name=new_name,
+                    design=new_design,
+                    color=new_color,
+                    card_count=total_qty,
+                    locked=locked,
+                    custom_image=new_custom_image,
+                )
             self.cargar_mazos()
             show_toast("Portamazos actualizado.", "success", 2200)
 
@@ -1733,8 +2015,8 @@ class MazosView(QWidget):
             self.session.commit()
 
             # Copiar estilo visual del mazo
-            design, color, _locked = self._get_deck_style(mazo_id)
-            self._set_deck_style(nuevo_mazo.id, design, color, locked=False)
+            design, color, _locked, custom_image = self._get_deck_style(mazo_id)
+            self._set_deck_style(nuevo_mazo.id, design, color, locked=False, custom_image=custom_image)
 
             self.cargar_mazos()
             show_toast(f"Mazo duplicado: '{nuevo_nombre}'", "success", 2500)

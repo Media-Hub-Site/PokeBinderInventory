@@ -49,12 +49,13 @@ class GaleriaCartasInventario(QWidget):
         header_vbox.setSpacing(6)
 
         row1 = QHBoxLayout()
-        row1.setSpacing(10)
+        row1.setSpacing(8)
 
         self.buscador = QLineEdit()
         self.buscador.setPlaceholderText(t("BuscadorPlaceholder"))
         self.buscador.setProperty("class", "SearchInput")
-        row1.addWidget(self.buscador)
+        self.buscador.setMinimumWidth(140)
+        row1.addWidget(self.buscador, stretch=1)
 
         self.timer_busqueda = QTimer()
         self.timer_busqueda.setSingleShot(True)
@@ -75,6 +76,12 @@ class GaleriaCartasInventario(QWidget):
         self.btn_sync_precios.setProperty("class", "SyncBtn")
         self.btn_sync_precios.clicked.connect(self.iniciar_sincronizacion_precios)
         row1.addWidget(self.btn_sync_precios)
+
+        self.btn_seleccionar_todo = QPushButton(t("Seleccionar Todo"))
+        self.btn_seleccionar_todo.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_seleccionar_todo.setProperty("class", "SyncBtn")
+        self.btn_seleccionar_todo.clicked.connect(self.toggle_seleccionar_pagina)
+        row1.addWidget(self.btn_seleccionar_todo)
 
         header_vbox.addLayout(row1)
 
@@ -938,6 +945,8 @@ class GaleriaCartasInventario(QWidget):
     def retranslate_ui(self):
         self.buscador.setPlaceholderText(t("Buscar carta por nombre..."))
         self.btn_sync_precios.setText(t("Precios Real-Time"))
+        if hasattr(self, 'btn_seleccionar_todo'):
+            self.btn_seleccionar_todo.setText(t("Seleccionar Todo"))
         self.btn_anterior.setText(t("Anterior"))
         self.btn_siguiente.setText(t("Siguiente"))
         total_pages = max(1, (self.total_cartas + self.CARTAS_POR_PAGINA - 1) // self.CARTAS_POR_PAGINA)
@@ -991,6 +1000,34 @@ class GaleriaCartasInventario(QWidget):
                 lbl.setStyleSheet(style)
         elif label_obj:
             label_obj.setStyleSheet(style)
+
+    def toggle_seleccionar_pagina(self):
+        """Selecciona o deselecciona todas las cartas visibles en la página actual (Issue #49)."""
+        if not self.labels_por_id:
+            return
+        page_keys = set(self.labels_por_id.keys())
+        all_selected = page_keys.issubset(self.cartas_seleccionadas)
+
+        if all_selected:
+            # Deseleccionar todas las cartas de esta página
+            for key in page_keys:
+                self.cartas_seleccionadas.discard(key)
+                labels = self.labels_por_id.get(key, [])
+                if isinstance(labels, list):
+                    for lbl in labels:
+                        lbl.setStyleSheet("border: none; background-color: transparent;")
+                elif labels:
+                    labels.setStyleSheet("border: none; background-color: transparent;")
+        else:
+            # Seleccionar todas las cartas de esta página
+            for key in page_keys:
+                self.cartas_seleccionadas.add(key)
+                labels = self.labels_por_id.get(key, [])
+                if isinstance(labels, list):
+                    for lbl in labels:
+                        lbl.setStyleSheet("border: 2.5px solid #00cccc; border-radius: 6px; background-color: rgba(0, 255, 200, 0.25);")
+                elif labels:
+                    labels.setStyleSheet("border: 2.5px solid #00cccc; border-radius: 6px; background-color: rgba(0, 255, 200, 0.25);")
 
     def get_cartas_seleccionadas(self):
         if not self.cartas_seleccionadas:

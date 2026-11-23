@@ -28,6 +28,7 @@ class DeckBoxWidget(QWidget):
         design: str = "Charizard Fuego",
         color: str = "auto",
         card_count: int = 0,
+        locked: bool = False,
         parent=None,
     ):
         super().__init__(parent)
@@ -35,13 +36,14 @@ class DeckBoxWidget(QWidget):
         self._design = resolve_design_key(design)
         self._custom_color = color
         self._card_count = int(card_count)
+        self._locked = bool(locked)
         self._hovered = False
         self._hover_progress = 0.0
         self._hover_anim = None
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setMinimumSize(145, 185)
 
-    def set_deck_props(self, name=None, design=None, color=None, card_count=None):
+    def set_deck_props(self, name=None, design=None, color=None, card_count=None, locked=None):
         if name is not None:
             self._name = name or "Mi Mazo"
         if design is not None:
@@ -50,6 +52,8 @@ class DeckBoxWidget(QWidget):
             self._custom_color = color
         if card_count is not None:
             self._card_count = int(card_count)
+        if locked is not None:
+            self._locked = bool(locked)
         self.update()
 
     def set_hovered(self, hovered: bool):
@@ -287,6 +291,23 @@ class DeckBoxWidget(QWidget):
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(sheen)
             painter.drawRect(body_rect)
+
+        # Indicador vectorial discreto de bloqueo si el portamazos está protegido
+        if self._locked:
+            badge_s = 20.0
+            lock_x = bx + box_w - badge_s - 8.0
+            lock_y = by + 8.0
+            painter.setPen(QPen(QColor(255, 255, 255, 190), 1.2))
+            painter.setBrush(QColor(15, 23, 42, 210))
+            painter.drawRoundedRect(QRectF(lock_x, lock_y, badge_s, badge_s), 5, 5)
+            # Arco del candado
+            painter.setPen(QPen(QColor("#fbbf24"), 1.6))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawArc(QRectF(lock_x + 5.5, lock_y + 3.5, 9.0, 8.5), 0, 180 * 16)
+            # Cuerpo del candado
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor("#fbbf24"))
+            painter.drawRoundedRect(QRectF(lock_x + 4.5, lock_y + 8.5, 11.0, 8.0), 2, 2)
 
         painter.restore()
 

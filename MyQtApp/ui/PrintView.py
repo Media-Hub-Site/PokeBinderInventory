@@ -877,6 +877,23 @@ class PrintView(QWidget):
         else:
             show_toast("No se encontró el binder para cargar en Print.", "warning", 2500)
 
+    def cargar_mazo_automatico(self, mazo_id: int):
+        """Selecciona automáticamente un Mazo y carga sus cartas en la cola de impresión/exportación."""
+        self.limpiar_cola()
+        idx_tipo = self.combo_origen_tipo.findData("mazo")
+        if idx_tipo >= 0:
+            self.combo_origen_tipo.blockSignals(True)
+            self.combo_origen_tipo.setCurrentIndex(idx_tipo)
+            self.combo_origen_tipo.blockSignals(False)
+        self.refrescar_items_origen()
+
+        idx_item = self.combo_origen_item.findData(int(mazo_id))
+        if idx_item >= 0:
+            self.combo_origen_item.setCurrentIndex(idx_item)
+            self.cargar_origen_seleccionado_a_cola()
+        else:
+            show_toast("No se encontró el mazo para cargar en Print.", "warning", 2500)
+
     def exportar_cola_csv(self):
         """Exporta las cartas actualmente en la cola de Print a un archivo CSV."""
         if not self.print_queue:

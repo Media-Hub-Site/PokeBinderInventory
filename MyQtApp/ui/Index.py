@@ -258,6 +258,10 @@ class MainWindow(QWidget):
         if hasattr(binder_view, 'inside_binder_changed'):
             binder_view.inside_binder_changed.connect(self.on_binder_inside_changed)
 
+        mazos_view = self.paginas.widget(3)
+        if hasattr(mazos_view, 'open_deck_in_print_requested'):
+            mazos_view.open_deck_in_print_requested.connect(self.abrir_mazo_en_print)
+
         self.actualizar_botones_secundarios(0)
 
         # Configurar audio
@@ -308,6 +312,13 @@ class MainWindow(QWidget):
         if hasattr(print_view, "cargar_binder_automatico"):
             print_view.cargar_binder_automatico(binder_id)
 
+    def abrir_mazo_en_print(self, mazo_id: int, action: str = "print"):
+        """Redirige al usuario a la sección Print y carga automáticamente el mazo en la cola."""
+        self.animar_transicion(4)
+        print_view = self.paginas.widget(4)
+        if hasattr(print_view, "cargar_mazo_automatico"):
+            print_view.cargar_mazo_automatico(mazo_id)
+
     def actualizar_tamano_cartas(self, size):
         try:
             galeria = self.paginas.widget(0)
@@ -321,6 +332,14 @@ class MainWindow(QWidget):
                 inventario.actualizar_galeria()
         except Exception as e:
             print(f"Error actualizando inventario: {e}")
+        try:
+            mazos = self.paginas.widget(3)
+            if hasattr(mazos, '_update_zoom_buttons_style'):
+                mazos._update_zoom_buttons_style()
+            if hasattr(mazos, 'cargar_coleccion_navegador'):
+                mazos.cargar_coleccion_navegador()
+        except Exception as e:
+            print(f"Error actualizando mazos: {e}")
 
     def animar_transicion(self, nuevo_indice):
         indice_actual = self.paginas.currentIndex()

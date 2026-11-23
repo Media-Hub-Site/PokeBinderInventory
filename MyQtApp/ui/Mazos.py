@@ -4,9 +4,9 @@ import re
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QScrollArea, QFrame, QMessageBox, QDialog, QStackedWidget, QGridLayout,
-    QComboBox, QColorDialog, QApplication, QSizePolicy
+    QComboBox, QColorDialog, QApplication, QSizePolicy, QMenu
 )
-from PyQt6.QtGui import QPixmap, QColor, QDrag
+from PyQt6.QtGui import QPixmap, QColor, QDrag, QAction, QPalette
 from PyQt6.QtCore import Qt, QPoint, QRect, QRectF, QMimeData, QTimer, pyqtSignal
 from sqlalchemy import and_, func
 
@@ -279,13 +279,15 @@ class DraggableCollectionCardWidget(QFrame):
     """Carta navegable de la colección del usuario; se puede arrastrar al mazo o agregar con clic/+."""
     quick_add_requested = pyqtSignal(dict)
 
-    def __init__(self, card_data: dict, pixmap: QPixmap, in_deck_qty: int = 0, parent=None):
+    def __init__(self, card_data: dict, pixmap: QPixmap, in_deck_qty: int = 0, card_size=(100, 142), parent=None):
         super().__init__(parent)
         self.card_data = card_data
         self.card_key = f"{card_data.get('id_api')}:{card_data.get('idioma', 'es')}"
+        self.card_size = card_size
         self._drag_start = QPoint()
 
-        self.setFixedSize(108, 152)
+        cw, ch = card_size
+        self.setFixedSize(cw + 8, ch + 10)
         self.setCursor(Qt.CursorShape.OpenHandCursor)
         self.setStyleSheet("""
             DraggableCollectionCardWidget {
@@ -304,7 +306,7 @@ class DraggableCollectionCardWidget(QFrame):
         vbox.setSpacing(0)
 
         self.lbl_img = QLabel(self)
-        self.lbl_img.setFixedSize(100, 142)
+        self.lbl_img.setFixedSize(cw, ch)
         self.lbl_img.setScaledContents(True)
         self.lbl_img.setPixmap(pixmap)
         self.lbl_img.setToolTip(
@@ -355,8 +357,9 @@ class DraggableCollectionCardWidget(QFrame):
 
     def set_card_pixmap(self, pixmap: QPixmap):
         if pixmap and not pixmap.isNull():
+            cw, ch = self.card_size
             self.lbl_img.setPixmap(
-                pixmap.scaled(100, 142, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                pixmap.scaled(cw, ch, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
             )
             self.lbl_in_deck.raise_()
             self.btn_add.raise_()
@@ -556,6 +559,8 @@ class DeckBoxCustomizeDialog(QDialog):
 
 
 class MazosView(QWidget):
+    open_deck_in_print_requested = pyqtSignal(int, str)  # (mazo_id, mode: "print" | "csv")
+
     """
     Sección de Mazos con Portamazos físicos 3D personalizables + Constructor Visual Drag & Drop:
       - Vista Home: Estantería de Portamazos 3D con apertura/cierre animado
@@ -583,6 +588,8 @@ class MazosView(QWidget):
         # Estado del navegador de colección inferior
         self.col_page = 0
         self.col_total = 0
+        self.col_coleccion_activa = None  # None significa "Todas"
+        self.col_orden_activo = None      # "rarity" | "type" | "idioma" | None
         self.col_widgets_by_key = {}  # card_key -> list[DraggableCollectionCardWidget]
         self.col_image_loader = CardImageLoaderManager(max_threads=6, parent=self)
         self.col_image_loader.image_ready.connect(self._on_col_async_image_ready)
@@ -590,19 +597,36 @@ class MazosView(QWidget):
         self.init_ui()
         self.mostrar_estanteria_mazos(animate_close=False)
 
-    def _get_deck_style(self, mazo_id: int) -> tuple[str, str]:
+    def _get_deck_style(self, mazo_id: int) -> tuple[str, str, bool]:
         entry = self._deck_styles.get(str(mazo_id))
         if isinstance(entry, dict):
-            return resolve_design_key(entry.get("design", "Charizard Fuego")), entry.get("color", "auto")
+            design = resolve_design_key(entry.get("design", "Charizard Fuego"))
+            color = entry.get("color", "auto")
+            locked = bool(entry.get("locked", False))
+            return design, color, locked
         default_design = _DEFAULT_DESIGN_KEYS[int(mazo_id) % len(_DEFAULT_DESIGN_KEYS)]
-        return default_design, "auto"
+        return default_design, "auto", False
 
-    def _set_deck_style(self, mazo_id: int, design: str, color: str):
-        self._deck_styles[str(mazo_id)] = {
-            "design": resolve_design_key(design),
-            "color": color or "auto",
-        }
+    def _set_deck_style(self, mazo_id: int, design: str, color: str, locked: bool = None):
+        entry = self._deck_styles.setdefault(str(mazo_id), {})
+        entry["design"] = resolve_design_key(design)
+        entry["color"] = color or "auto"
+        if locked is not None:
+            entry["locked"] = bool(locked)
         _save_deck_box_styles(self._deck_styles)
+
+    def _is_deck_locked(self, mazo_id: int) -> bool:
+        entry = self._deck_styles.get(str(mazo_id))
+        return bool(entry.get("locked", False)) if isinstance(entry, dict) else False
+
+    def _toggle_bloquear_mazo(self, mazo_id: int):
+        entry = self._deck_styles.setdefault(str(mazo_id), {})
+        new_state = not bool(entry.get("locked", False))
+        entry["locked"] = new_state
+        _save_deck_box_styles(self._deck_styles)
+        self.cargar_mazos()
+        msg = t("Mazo bloqueado (protegido contra edición y eliminación)") if new_state else t("Mazo desbloqueado")
+        show_toast(msg, "info", 2400)
 
     def init_ui(self):
         root_layout = QVBoxLayout(self)
@@ -777,7 +801,7 @@ class MazosView(QWidget):
         col_vbox.setContentsMargins(10, 8, 10, 8)
         col_vbox.setSpacing(6)
 
-        # Barra superior de Mi Colección con botón desplegable "Filtros"
+        # Barra superior de Mi Colección: Título + Buscador + Botones Colección / Ordenar + Selector de Vista
         col_top_row = QHBoxLayout()
         col_top_row.setSpacing(8)
 
@@ -789,125 +813,79 @@ class MazosView(QWidget):
         self.lbl_col_count.setStyleSheet("font-size: 11px; font-weight: 600; color: #8c5a69; border: none; background: transparent;")
         col_top_row.addWidget(self.lbl_col_count)
 
-        col_top_row.addStretch()
-
-        self.btn_toggle_filters = QPushButton(t("Filtros"))
-        self.btn_toggle_filters.setCheckable(True)
-        self.btn_toggle_filters.setChecked(False)
-        self.btn_toggle_filters.setFixedHeight(28)
-        self.btn_toggle_filters.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_toggle_filters.clicked.connect(self._toggle_filters_drawer)
-        self._refresh_filter_btn_style()
-        col_top_row.addWidget(self.btn_toggle_filters)
-
-        col_vbox.addLayout(col_top_row)
-
-        # Panel desplegable de filtros (oculto inicialmente para maximizar espacio de cartas)
-        self.filters_drawer = QFrame(col_panel)
-        self.filters_drawer.setObjectName("DeckFiltersDrawer")
-        self.filters_drawer.setStyleSheet("""
-            QFrame#DeckFiltersDrawer {
-                background-color: #ffeef2;
-                border: 1px solid #f2b8c3;
-                border-radius: 9px;
-            }
-        """)
-        drawer_vbox = QVBoxLayout(self.filters_drawer)
-        drawer_vbox.setContentsMargins(8, 6, 8, 6)
-        drawer_vbox.setSpacing(6)
-
-        # Fila 1 del drawer: Nombre + Carpeta + Idioma + Limpiar
-        f_row1 = QHBoxLayout()
-        f_row1.setSpacing(6)
-
         self.col_search = QLineEdit()
-        self.col_search.setPlaceholderText(t("Filtrar por nombre..."))
+        self.col_search.setPlaceholderText(t("Buscar carta por nombre..."))
         self.col_search.setFixedHeight(28)
         self.col_search.setStyleSheet("""
             QLineEdit {
-                background: #ffffff; color: #3f2730; border: 1px solid #f29ca4;
-                border-radius: 7px; padding: 2px 8px; font-size: 12px;
+                background: #ffffff; color: #3f2730; border: 1.5px solid #f29ca4;
+                border-radius: 8px; padding: 2px 10px; font-size: 12px;
+            }
+            QLineEdit:focus {
+                border-color: #f56b7b;
             }
         """)
         self.col_search_timer = QTimer(self)
         self.col_search_timer.setSingleShot(True)
         self.col_search_timer.timeout.connect(self._reset_col_page_and_load)
         self.col_search.textChanged.connect(lambda _: self.col_search_timer.start(220))
-        f_row1.addWidget(self.col_search, 2)
+        col_top_row.addWidget(self.col_search, 1)
 
-        combo_f_style = """
-            QComboBox {
-                background: #ffffff; color: #3f2730; border: 1px solid #f29ca4;
-                border-radius: 7px; padding: 2px 8px; font-size: 11px;
+        # Botones "Colección" y "Ordenar" desplegables con letra oscura de alto contraste (Issue #46)
+        deck_filter_btn_style = """
+            QPushButton {
+                background-color: #ffd6e0;
+                color: #3b1723;
+                border-radius: 8px;
+                padding: 4px 10px;
+                font-weight: 700;
+                font-size: 12px;
+                border: 1.5px solid #e08fa0;
+                min-height: 28px;
+            }
+            QPushButton:hover {
+                background-color: #f7a8b8;
+                color: #2b0f18;
+                border-color: #d44854;
+            }
+            QPushButton:pressed {
+                background-color: #f29ca4;
+                color: #1f0a11;
             }
         """
 
-        self.col_combo_carpeta = QComboBox()
-        self.col_combo_carpeta.setFixedHeight(28)
-        self.col_combo_carpeta.setStyleSheet(combo_f_style)
-        self.col_combo_carpeta.currentIndexChanged.connect(self._reset_col_page_and_load)
-        f_row1.addWidget(self.col_combo_carpeta, 1)
+        self.btn_col_coleccion = QPushButton(t("Colección"))
+        self.btn_col_coleccion.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_col_coleccion.setStyleSheet(deck_filter_btn_style)
+        self._apply_dark_text_button_palette(self.btn_col_coleccion)
+        self.btn_col_coleccion.clicked.connect(self._mostrar_menu_col_coleccion)
+        col_top_row.addWidget(self.btn_col_coleccion)
 
-        self.col_combo_idioma = QComboBox()
-        self.col_combo_idioma.setFixedHeight(28)
-        self.col_combo_idioma.setStyleSheet(combo_f_style)
-        self.col_combo_idioma.addItem(f"{t('Idioma')}: {t('Todos')}", None)
-        self.col_combo_idioma.addItem("Español", "es")
-        self.col_combo_idioma.addItem("English", "en")
-        self.col_combo_idioma.addItem("日本語", "ja")
-        self.col_combo_idioma.addItem("Français", "fr")
-        self.col_combo_idioma.addItem("Português", "pt")
-        self.col_combo_idioma.addItem("繁體中文", "zh")
-        self.col_combo_idioma.currentIndexChanged.connect(self._reset_col_page_and_load)
-        f_row1.addWidget(self.col_combo_idioma, 1)
+        self.btn_col_ordenar = QPushButton(t("Ordenar"))
+        self.btn_col_ordenar.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_col_ordenar.setStyleSheet(deck_filter_btn_style)
+        self._apply_dark_text_button_palette(self.btn_col_ordenar)
+        self.btn_col_ordenar.clicked.connect(self._mostrar_menu_col_ordenar)
+        col_top_row.addWidget(self.btn_col_ordenar)
 
-        btn_clean_f = QPushButton(t("Limpiar"))
-        btn_clean_f.setFixedHeight(28)
-        btn_clean_f.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_clean_f.setStyleSheet("""
-            QPushButton {
-                background: #ffffff; color: #5a2a3a; border: 1px solid #f29ca4;
-                border-radius: 7px; padding: 2px 10px; font-size: 11px; font-weight: 600;
-            }
-            QPushButton:hover { background: #ffdfe6; }
-        """)
-        btn_clean_f.clicked.connect(self._limpiar_filtros_coleccion)
-        f_row1.addWidget(btn_clean_f)
-        drawer_vbox.addLayout(f_row1)
+        # Selector de Vista (Compacto, Normal, Grande) (Issue #45)
+        lbl_vista = QLabel(t("Vista"))
+        lbl_vista.setStyleSheet("font-size: 11px; font-weight: 700; color: #5a2a3a; margin-left: 6px; border: none; background: transparent;")
+        col_top_row.addWidget(lbl_vista)
 
-        # Fila 2 del drawer: Rareza, Tipo, Edición, Etapa, Entrenador
-        f_row2 = QHBoxLayout()
-        f_row2.setSpacing(6)
-        self.col_filtros = {}
-        for etiqueta, columna in (
-            ("Rareza", "rarity"),
-            ("Tipo", "type"),
-            ("Edición", "edition"),
-            ("Etapa", "stage"),
-            ("Entrenador", "trainer"),
-        ):
-            cb = QComboBox()
-            cb.setFixedHeight(28)
-            cb.setStyleSheet(combo_f_style)
-            cb.addItem(f"{t(etiqueta)}: {t('Todos')}")
-            cb.currentIndexChanged.connect(self._reset_col_page_and_load)
-            self.col_filtros[columna] = cb
-            f_row2.addWidget(cb, 1)
-        drawer_vbox.addLayout(f_row2)
+        self._zoom_buttons = {}
+        for key, label in [("Pequeño", "Compacto"), ("Normal", "Normal"), ("Grande", "Grande")]:
+            zbtn = QPushButton(t(label))
+            zbtn.setCursor(Qt.CursorShape.PointingHandCursor)
+            zbtn.setFixedHeight(26)
+            zbtn.clicked.connect(lambda ch=False, k=key: self._set_deck_zoom(k))
+            self._zoom_buttons[key] = zbtn
+            col_top_row.addWidget(zbtn)
+        self._update_zoom_buttons_style()
 
-        # Fila 3 del drawer: Barra visual complementaria de Energías Pokémon (sin control de zoom)
-        self.col_energy_bar = EnergyTypeFilterBar(self.filters_drawer)
-        self.col_energy_bar.lbl_zoom.hide()
-        for zb in self.col_energy_bar._zoom_buttons.values():
-            zb.hide()
-        self.col_energy_bar.type_selected.connect(self._on_col_energy_pill_selected)
-        self.col_filtros["type"].currentIndexChanged.connect(self._sync_col_energy_from_combo)
-        drawer_vbox.addWidget(self.col_energy_bar)
+        col_vbox.addLayout(col_top_row)
 
-        self.filters_drawer.setVisible(False)
-        col_vbox.addWidget(self.filters_drawer)
-
-        # Cuadrícula desplazable de cartas de Mi Colección
+        # Cuadrícula desplazable de cartas de Mi Colección (Issue #45)
         self.col_scroll = QScrollArea(col_panel)
         self.col_scroll.setWidgetResizable(True)
         self.col_scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
@@ -915,8 +893,8 @@ class MazosView(QWidget):
         self.col_grid_container = QWidget()
         self.col_grid_container.setStyleSheet("background: transparent;")
         self.col_grid = QGridLayout(self.col_grid_container)
-        self.col_grid.setContentsMargins(2, 2, 2, 2)
-        self.col_grid.setSpacing(8)
+        self.col_grid.setContentsMargins(6, 6, 6, 6)
+        self.col_grid.setSpacing(10)
         self.col_grid.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         self.col_scroll.setWidget(self.col_grid_container)
         col_vbox.addWidget(self.col_scroll, 1)
@@ -951,104 +929,182 @@ class MazosView(QWidget):
 
         layout.addWidget(col_panel, 1)
 
-    # ── Helpers de Filtros Desplegables de Mi Colección ────────────────────────
-    def _refresh_filter_btn_style(self):
-        opened = self.btn_toggle_filters.isChecked()
-        self.btn_toggle_filters.setText(t("Ocultar Filtros") if opened else t("Filtros"))
-        if opened:
-            self.btn_toggle_filters.setStyleSheet("""
-                QPushButton {
-                    background-color: #f56b7b; color: #ffffff; font-size: 11px; font-weight: 700;
-                    border: 1.5px solid #d44854; border-radius: 9px; padding: 2px 14px;
-                }
-                QPushButton:hover { background-color: #e05263; }
-            """)
-        else:
-            self.btn_toggle_filters.setStyleSheet("""
-                QPushButton {
-                    background-color: #ffffff; color: #5a2a3a; font-size: 11px; font-weight: 700;
-                    border: 1.5px solid #f2b8c3; border-radius: 9px; padding: 2px 14px;
-                }
-                QPushButton:hover { background-color: #ffdfe6; border-color: #f56b7b; }
-            """)
+    # ── Helpers de Filtros y Orden de Mi Colección (Issues #45 y #46) ──────────
+    def _apply_dark_text_button_palette(self, btn: QPushButton):
+        pal = btn.palette()
+        pal.setColor(QPalette.ColorRole.ButtonText, QColor("#3b1723"))
+        pal.setColor(QPalette.ColorRole.WindowText, QColor("#3b1723"))
+        pal.setColor(QPalette.ColorRole.Text, QColor("#3b1723"))
+        btn.setPalette(pal)
 
-    def _toggle_filters_drawer(self):
-        self.filters_drawer.setVisible(self.btn_toggle_filters.isChecked())
-        self._refresh_filter_btn_style()
+    def _create_styled_popup_menu(self) -> QMenu:
+        menu = QMenu(self)
+        menu.setMinimumWidth(165)
+        menu.setMaximumWidth(220)
+        pal = menu.palette()
+        pal.setColor(QPalette.ColorRole.Window, QColor("#0f172a"))
+        pal.setColor(QPalette.ColorRole.Base, QColor("#0f172a"))
+        pal.setColor(QPalette.ColorRole.WindowText, QColor("#f8fafc"))
+        pal.setColor(QPalette.ColorRole.Text, QColor("#f8fafc"))
+        pal.setColor(QPalette.ColorRole.ButtonText, QColor("#f8fafc"))
+        pal.setColor(QPalette.ColorRole.Highlight, QColor("#e25b70"))
+        pal.setColor(QPalette.ColorRole.HighlightedText, QColor("#ffffff"))
+        menu.setPalette(pal)
+        menu.setStyleSheet("""
+            QMenu {
+                background-color: #0f172a;
+                color: #f8fafc;
+                border: 1.5px solid #f29ca4;
+                border-radius: 8px;
+                padding: 4px;
+                font-size: 12px;
+            }
+            QMenu::item {
+                padding: 6px 16px 6px 10px;
+                border-radius: 5px;
+                color: #f8fafc;
+                background-color: transparent;
+            }
+            QMenu::item:selected {
+                background-color: #e25b70;
+                color: #ffffff;
+            }
+            QMenu::item:checked {
+                font-weight: bold;
+                color: #ffffff;
+                background-color: rgba(242, 156, 164, 0.25);
+            }
+            QMenu::separator {
+                height: 1px;
+                background: #334155;
+                margin: 4px 8px;
+            }
+        """)
+        return menu
+
+    def _mostrar_menu_col_coleccion(self):
+        """Despliega menú desplegable para filtrar por colecciones/carpetas creadas (Issue #46)."""
+        cats = obtener_categorias_usuario(self.usuario)
+        if self.col_coleccion_activa and self.col_coleccion_activa not in cats:
+            self.col_coleccion_activa = None
+
+        menu = self._create_styled_popup_menu()
+
+        act_todas = QAction(t("Todas"), menu)
+        act_todas.setCheckable(True)
+        act_todas.setChecked(self.col_coleccion_activa is None)
+        act_todas.triggered.connect(lambda: self._seleccionar_col_coleccion(None))
+        menu.addAction(act_todas)
+
+        if cats:
+            menu.addSeparator()
+            for cat in cats:
+                act_cat = QAction(cat, menu)
+                act_cat.setCheckable(True)
+                act_cat.setChecked(self.col_coleccion_activa == cat)
+                act_cat.triggered.connect(lambda checked=False, c=cat: self._seleccionar_col_coleccion(c))
+                menu.addAction(act_cat)
+
+        menu.exec(self.btn_col_coleccion.mapToGlobal(QPoint(0, self.btn_col_coleccion.height() + 2)))
+
+    def _seleccionar_col_coleccion(self, coleccion):
+        self.col_coleccion_activa = coleccion
+        if coleccion:
+            self.btn_col_coleccion.setText(f"{t('Colección')}: {coleccion}")
+            self.btn_col_coleccion.setToolTip(f"{t('Colección')}: {coleccion}")
+        else:
+            self.btn_col_coleccion.setText(t("Colección"))
+            self.btn_col_coleccion.setToolTip(t("Colección"))
+        self._reset_col_page_and_load()
+
+    def _mostrar_menu_col_ordenar(self):
+        """Despliega menú desplegable para ordenar cartas por Rareza, Energía e Idioma (Issue #46)."""
+        menu = self._create_styled_popup_menu()
+
+        opciones = [
+            (t("Rareza"), "rarity"),
+            (t("Energía"), "type"),
+            (t("Idioma"), "idioma"),
+        ]
+        for label, key in opciones:
+            act = QAction(label, menu)
+            act.setCheckable(True)
+            act.setChecked(self.col_orden_activo == key)
+            act.triggered.connect(lambda checked=False, k=key: self._seleccionar_col_orden(k))
+            menu.addAction(act)
+
+        if self.col_orden_activo is not None:
+            menu.addSeparator()
+            act_reset = QAction(t("Por defecto"), menu)
+            act_reset.triggered.connect(lambda: self._seleccionar_col_orden(None))
+            menu.addAction(act_reset)
+
+        menu.exec(self.btn_col_ordenar.mapToGlobal(QPoint(0, self.btn_col_ordenar.height() + 2)))
+
+    def _seleccionar_col_orden(self, clave_orden):
+        if self.col_orden_activo == clave_orden and clave_orden is not None:
+            self.col_orden_activo = None
+        else:
+            self.col_orden_activo = clave_orden
+        self._reset_col_page_and_load()
+
+    def _get_deck_card_size_and_cols(self) -> tuple[tuple[int, int], int]:
+        """Calcula el tamaño de carta y número de columnas según la vista activa (Issue #45)."""
+        tam = load_settings().get("tamano_cartas", "Normal")
+        if tam == "Pequeño":
+            return (90, 127), 7
+        elif tam == "Grande":
+            return (150, 212), 4
+        else:
+            return (120, 170), 5
+
+    def _set_deck_zoom(self, size_key: str):
+        """Cambia el tamaño de vista (Compacto / Normal / Grande) y guarda en ajustes."""
+        from MyQtApp.config import save_settings
+        settings = load_settings()
+        if settings.get("tamano_cartas") == size_key:
+            return
+        settings["tamano_cartas"] = size_key
+        save_settings(settings)
+        self._update_zoom_buttons_style()
+        self.cargar_coleccion_navegador()
+
+    def _update_zoom_buttons_style(self):
+        active_zoom = load_settings().get("tamano_cartas", "Normal")
+        for key, btn in self._zoom_buttons.items():
+            is_active = (key == active_zoom)
+            if is_active:
+                btn.setStyleSheet("""
+                    QPushButton {
+                        background-color: #f56b7b;
+                        color: #ffffff;
+                        font-size: 11px;
+                        font-weight: 700;
+                        border: 1.5px solid #d44854;
+                        border-radius: 8px;
+                        padding: 2px 10px;
+                    }
+                """)
+            else:
+                btn.setStyleSheet("""
+                    QPushButton {
+                        background-color: #ffffff;
+                        color: #5a2a3a;
+                        font-size: 11px;
+                        font-weight: 600;
+                        border: 1.5px solid #f2b8c3;
+                        border-radius: 8px;
+                        padding: 2px 10px;
+                    }
+                    QPushButton:hover {
+                        background-color: #ffdfe6;
+                        border-color: #f56b7b;
+                    }
+                """)
 
     def _cargar_opciones_filtros_coleccion(self):
-        # Carpetas de colección
-        self.col_combo_carpeta.blockSignals(True)
-        self.col_combo_carpeta.clear()
-        self.col_combo_carpeta.addItem(f"{t('Carpeta')}: {t('Todas')}", None)
-        for cat in obtener_categorias_usuario(self.usuario):
-            self.col_combo_carpeta.addItem(cat, cat)
-        self.col_combo_carpeta.blockSignals(False)
-
-        # Combos dinámicos a partir de las cartas presentes en la colección del usuario
-        for columna, combo in self.col_filtros.items():
-            combo.blockSignals(True)
-            first_lbl = combo.itemText(0)
-            combo.clear()
-            combo.addItem(first_lbl)
-            vals = (
-                self.session.query(getattr(Cartas, columna))
-                .join(
-                    UsuarioCarta,
-                    and_(
-                        Cartas.id_api == UsuarioCarta.carta_id,
-                        func.coalesce(Cartas.idioma, "es") == func.coalesce(UsuarioCarta.idioma, "es"),
-                    ),
-                )
-                .filter(UsuarioCarta.usuario_nombre == self.usuario)
-                .filter(getattr(Cartas, columna).isnot(None))
-                .distinct()
-                .all()
-            )
-            for v in sorted(x[0] for x in vals if x[0]):
-                combo.addItem(v)
-            combo.blockSignals(False)
-
-    def _on_col_energy_pill_selected(self, type_val):
-        combo = self.col_filtros.get("type")
-        if not combo:
-            return
-        combo.blockSignals(True)
-        if not type_val:
-            combo.setCurrentIndex(0)
-        else:
-            idx = combo.findText(type_val, Qt.MatchFlag.MatchFixedString)
-            if idx < 0 and type_val == "Lightning":
-                idx = combo.findText("Electric", Qt.MatchFlag.MatchFixedString)
-            combo.setCurrentIndex(idx if idx >= 0 else 0)
-        combo.blockSignals(False)
-        self._reset_col_page_and_load()
-
-    def _sync_col_energy_from_combo(self):
-        combo = self.col_filtros.get("type")
-        if combo:
-            val = combo.currentText() if combo.currentIndex() > 0 else None
-            self.col_energy_bar.set_active_type(val)
-
-    def _limpiar_filtros_coleccion(self):
-        self.col_search.blockSignals(True)
-        self.col_search.clear()
-        self.col_search.blockSignals(False)
-
-        self.col_combo_carpeta.blockSignals(True)
-        self.col_combo_carpeta.setCurrentIndex(0)
-        self.col_combo_carpeta.blockSignals(False)
-
-        self.col_combo_idioma.blockSignals(True)
-        self.col_combo_idioma.setCurrentIndex(0)
-        self.col_combo_idioma.blockSignals(False)
-
-        for cb in self.col_filtros.values():
-            cb.blockSignals(True)
-            cb.setCurrentIndex(0)
-            cb.blockSignals(False)
-        self.col_energy_bar.set_active_type(None)
-        self._reset_col_page_and_load()
+        """Mantenido por compatibilidad con llamadas existentes."""
+        pass
 
     def _reset_col_page_and_load(self):
         self.col_page = 0
@@ -1066,7 +1122,7 @@ class MazosView(QWidget):
             self.cargar_coleccion_navegador()
 
     def cargar_coleccion_navegador(self):
-        """Carga las cartas de la colección del usuario en la cuadrícula inferior arrastrable."""
+        """Carga las cartas de la colección del usuario con ajuste de vista y ordenamiento (Issues #45 y #46)."""
         self.col_widgets_by_key.clear()
         while self.col_grid.count():
             item = self.col_grid.takeAt(0)
@@ -1089,31 +1145,38 @@ class MazosView(QWidget):
         if txt:
             q = q.filter(Cartas.nombre.ilike(f"%{txt}%"))
 
-        carpeta = self.col_combo_carpeta.currentData()
-        if carpeta:
-            q = q.filter(UsuarioCarta.categoria == carpeta)
+        if self.col_coleccion_activa:
+            q = q.filter(UsuarioCarta.categoria == self.col_coleccion_activa)
 
-        lang = self.col_combo_idioma.currentData()
-        if lang:
-            q = q.filter(Cartas.idioma == lang)
-
-        for columna, cb in self.col_filtros.items():
-            if cb.currentIndex() > 0:
-                q = q.filter(getattr(Cartas, columna) == cb.currentText())
+        # Aplicar orden activo (Rareza, Energía, Idioma) o por defecto (Nombre)
+        if self.col_orden_activo == "rarity":
+            q = q.order_by(Cartas.rarity.asc(), Cartas.nombre.asc())
+        elif self.col_orden_activo == "type":
+            q = q.order_by(Cartas.type.asc(), Cartas.nombre.asc())
+        elif self.col_orden_activo == "idioma":
+            q = q.order_by(Cartas.idioma.asc(), Cartas.nombre.asc())
+        else:
+            q = q.order_by(Cartas.nombre.asc())
 
         self.col_total = q.count()
         self.lbl_col_count.setText(f"({self.col_total} cartas)")
 
+        card_size, default_cols = self._get_deck_card_size_and_cols()
+        cw, ch = card_size
+
         cartas = (
-            q.order_by(Cartas.nombre.asc())
-            .limit(self.COL_PER_PAGE)
+            q.limit(self.COL_PER_PAGE)
             .offset(self.col_page * self.COL_PER_PAGE)
             .all()
         )
 
-        # Calcular columnas según ancho disponible (mínimo 6)
-        avail_w = max(680, self.col_scroll.viewport().width() - 16)
-        cols = max(6, avail_w // 118)
+        # Calcular columnas según el ancho visible del viewport (igual que en Buscar)
+        viewport_w = self.col_scroll.viewport().width()
+        tile_w = cw + 8 + 10  # ancho carta + padding + spacing
+        if viewport_w > 100:
+            cols = max(3, viewport_w // tile_w)
+        else:
+            cols = default_cols
 
         row, col = 0, 0
         for carta in cartas:
@@ -1126,19 +1189,21 @@ class MazosView(QWidget):
                 "edition": carta.edition or "",
             }
 
-            pix = get_webp_pixmap(carta.id_api, carta.nombre, c_lang, size=(100, 142))
+            pix = get_webp_pixmap(carta.id_api, carta.nombre, c_lang, size=card_size)
             needs_dl = False
             if not pix:
-                pix = get_pixmap_from_zip(carta.nombre.lower().replace(" ", "_"), size=(100, 142), id_api=carta.id_api)
+                pix = get_pixmap_from_zip(carta.nombre.lower().replace(" ", "_"), size=card_size, id_api=carta.id_api)
             if not pix or pix.isNull():
-                pix = get_card_placeholder_pixmap((100, 142), carta.nombre)
+                pix = get_card_placeholder_pixmap(card_size, carta.nombre)
                 needs_dl = True
 
             in_deck_qty = self.deck_tiles[card_key].get_quantity() if card_key in self.deck_tiles else 0
-            cw = DraggableCollectionCardWidget(card_data, pix, in_deck_qty=in_deck_qty, parent=self.col_grid_container)
-            cw.quick_add_requested.connect(self._on_card_dropped_in_deck)
-            self.col_grid.addWidget(cw, row, col)
-            self.col_widgets_by_key.setdefault(card_key, []).append(cw)
+            card_widget = DraggableCollectionCardWidget(
+                card_data, pix, in_deck_qty=in_deck_qty, card_size=card_size, parent=self.col_grid_container
+            )
+            card_widget.quick_add_requested.connect(self._on_card_dropped_in_deck)
+            self.col_grid.addWidget(card_widget, row, col)
+            self.col_widgets_by_key.setdefault(card_key, []).append(card_widget)
 
             if needs_dl:
                 self.col_image_loader.request_image(
@@ -1319,7 +1384,7 @@ class MazosView(QWidget):
 
     def _crear_tarjeta_portamazos(self, mazo: Mazo) -> QFrame:
         total_qty = sum(mc.cantidad for mc in mazo.cartas)
-        design, color = self._get_deck_style(mazo.id)
+        design, color, locked = self._get_deck_style(mazo.id)
 
         frame = QFrame()
         frame.setFixedSize(222, 300)
@@ -1345,6 +1410,7 @@ class MazosView(QWidget):
             design=design,
             color=color,
             card_count=total_qty,
+            locked=locked,
             parent=frame,
         )
         deck_box.setFixedSize(198, 224)
@@ -1361,31 +1427,30 @@ class MazosView(QWidget):
         bottom_row.addWidget(lbl_cnt)
         bottom_row.addStretch()
 
-        btn_edit = QPushButton(t("Diseño"))
-        btn_edit.setFixedHeight(22)
-        btn_edit.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_edit.setStyleSheet("""
+        btn_more = QPushButton("...")
+        btn_more.setFixedSize(30, 24)
+        btn_more.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_more.setToolTip(t("Opciones del mazo"))
+        btn_more.setStyleSheet("""
             QPushButton {
-                background: #fff0f4; color: #5a2a3a; border: 1px solid #f2b8c3;
-                border-radius: 6px; padding: 0 8px; font-size: 10px; font-weight: 600;
+                background: #fff0f4;
+                color: #703043;
+                border: 1.5px solid #f2c4ce;
+                border-radius: 7px;
+                font-size: 13px;
+                font-weight: 800;
+                padding: 0 0 4px 0;
             }
-            QPushButton:hover { background: #f7a8b8; color: white; border-color: #f56b7b; }
-        """)
-        btn_edit.clicked.connect(lambda ch, mid=mazo.id: self.personalizar_mazo_por_id(mid))
-        bottom_row.addWidget(btn_edit)
-
-        btn_del = QPushButton(t("Eliminar"))
-        btn_del.setFixedHeight(22)
-        btn_del.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_del.setStyleSheet("""
-            QPushButton {
-                background: transparent; color: #b91c1c; border: 1px solid #fecaca;
-                border-radius: 6px; padding: 0 8px; font-size: 10px; font-weight: 600;
+            QPushButton:hover {
+                background: #f7a8b8;
+                color: #ffffff;
+                border-color: #f56b7b;
             }
-            QPushButton:hover { background: #fee2e2; border-color: #ef4444; }
         """)
-        btn_del.clicked.connect(lambda ch, mid=mazo.id: self.eliminar_mazo_por_id(mid))
-        bottom_row.addWidget(btn_del)
+        btn_more.clicked.connect(
+            lambda ch=False, mid=mazo.id, mname=mazo.nombre, anchor=btn_more: self._abrir_menu_mazo(mid, mname, anchor)
+        )
+        bottom_row.addWidget(btn_more)
 
         vbox.addLayout(bottom_row)
 
@@ -1482,9 +1547,10 @@ class MazosView(QWidget):
                     origin_rect = None
 
         self.mazo_actual = mazo
-        design, color = self._get_deck_style(mazo.id)
+        design, color, locked = self._get_deck_style(mazo.id)
         total_qty = sum(mc.cantidad for mc in mazo.cartas)
-        self.editor_mini_box.set_deck_props(name=mazo.nombre, design=design, color=color, card_count=total_qty)
+        self.editor_mini_box.set_deck_props(name=mazo.nombre, design=design, color=color, card_count=total_qty, locked=locked)
+        self.btn_customize_deck.setEnabled(not locked)
         self.cargar_cartas_de_mazo(mazo)
         self._cargar_opciones_filtros_coleccion()
         self.col_page = 0
@@ -1531,6 +1597,9 @@ class MazosView(QWidget):
             show_toast(f"Portamazos '{nombre}' creado con éxito.", "success", 2500)
 
     def personalizar_mazo_por_id(self, mazo_id: int):
+        if self._is_deck_locked(mazo_id):
+            show_toast(t("Este mazo está bloqueado y protegido."), "warning", 2400)
+            return
         mazo = self.session.query(Mazo).filter(Mazo.id == mazo_id).first()
         if not mazo:
             return
@@ -1559,7 +1628,124 @@ class MazosView(QWidget):
         if self.mazo_actual:
             self.personalizar_mazo_por_id(self.mazo_actual.id)
 
+    def _abrir_menu_mazo(self, mazo_id: int, mazo_nombre: str, anchor_btn: QPushButton):
+        """Despliega el menú contextual '...' con las opciones del mazo (Issue #48)."""
+        is_locked = self._is_deck_locked(mazo_id)
+
+        menu = QMenu(self)
+        pal = menu.palette()
+        pal.setColor(QPalette.ColorRole.Window, QColor("#0f172a"))
+        pal.setColor(QPalette.ColorRole.Base, QColor("#0f172a"))
+        pal.setColor(QPalette.ColorRole.WindowText, QColor("#f8fafc"))
+        pal.setColor(QPalette.ColorRole.Text, QColor("#f8fafc"))
+        pal.setColor(QPalette.ColorRole.ButtonText, QColor("#f8fafc"))
+        pal.setColor(QPalette.ColorRole.Highlight, QColor("#e25b70"))
+        pal.setColor(QPalette.ColorRole.HighlightedText, QColor("#ffffff"))
+        menu.setPalette(pal)
+        menu.setStyleSheet("""
+            QMenu {
+                background-color: #0f172a;
+                color: #f8fafc;
+                border: 1.5px solid #f29ca4;
+                border-radius: 8px;
+                padding: 4px;
+                font-size: 12px;
+            }
+            QMenu::item {
+                padding: 6px 18px 6px 12px;
+                border-radius: 5px;
+                color: #f8fafc;
+                background-color: transparent;
+            }
+            QMenu::item:selected {
+                background-color: #e25b70;
+                color: #ffffff;
+            }
+            QMenu::item:disabled {
+                color: #64748b;
+            }
+            QMenu::separator {
+                height: 1px;
+                background: #334155;
+                margin: 4px 8px;
+            }
+        """)
+
+        # 1. Bloquear / Desbloquear
+        act_lock = QAction(t("Desbloquear") if is_locked else t("Bloquear"), menu)
+        act_lock.triggered.connect(lambda: self._toggle_bloquear_mazo(mazo_id))
+        menu.addAction(act_lock)
+
+        # 2. Editar
+        act_edit = QAction(t("Editar"), menu)
+        act_edit.setEnabled(not is_locked)
+        act_edit.triggered.connect(lambda: self.personalizar_mazo_por_id(mazo_id))
+        menu.addAction(act_edit)
+
+        # 3. Duplicar
+        act_dup = QAction(t("Duplicar"), menu)
+        act_dup.triggered.connect(lambda: self._duplicar_mazo(mazo_id))
+        menu.addAction(act_dup)
+
+        menu.addSeparator()
+
+        # 4. Imprimir
+        act_print = QAction(t("Imprimir"), menu)
+        act_print.triggered.connect(lambda: self.open_deck_in_print_requested.emit(mazo_id, "print"))
+        menu.addAction(act_print)
+
+        menu.addSeparator()
+
+        # 5. Eliminar
+        act_del = QAction(t("Eliminar"), menu)
+        act_del.setEnabled(not is_locked)
+        act_del.triggered.connect(lambda: self.eliminar_mazo_por_id(mazo_id))
+        menu.addAction(act_del)
+
+        menu.exec(anchor_btn.mapToGlobal(QPoint(0, anchor_btn.height() + 2)))
+
+    def _duplicar_mazo(self, mazo_id: int):
+        """Crea una copia idéntica del mazo y sus cartas asignadas."""
+        self.session.expire_all()
+        mazo_orig = self.session.query(Mazo).filter(Mazo.id == mazo_id).first()
+        if not mazo_orig:
+            show_toast("No se encontró el mazo original.", "warning")
+            return
+
+        try:
+            nuevo_nombre = f"{mazo_orig.nombre} (Copia)"
+            nuevo_mazo = Mazo(nombre=nuevo_nombre, usuario_nombre=self.usuario)
+            self.session.add(nuevo_mazo)
+            self.session.flush()
+
+            # Duplicar cartas del mazo
+            for mc in mazo_orig.cartas:
+                nueva_carta = MazoCarta(
+                    mazo_id=nuevo_mazo.id,
+                    id_api=mc.id_api,
+                    nombre_carta=mc.nombre_carta,
+                    cantidad=mc.cantidad,
+                    idioma=mc.idioma,
+                    edition=mc.edition or ""
+                )
+                self.session.add(nueva_carta)
+
+            self.session.commit()
+
+            # Copiar estilo visual del mazo
+            design, color, _locked = self._get_deck_style(mazo_id)
+            self._set_deck_style(nuevo_mazo.id, design, color, locked=False)
+
+            self.cargar_mazos()
+            show_toast(f"Mazo duplicado: '{nuevo_nombre}'", "success", 2500)
+        except Exception as e:
+            self.session.rollback()
+            QMessageBox.critical(self, "Error", f"Error al duplicar el mazo: {e}")
+
     def eliminar_mazo_por_id(self, mazo_id: int):
+        if self._is_deck_locked(mazo_id):
+            show_toast(t("Este mazo está bloqueado y protegido."), "warning", 2400)
+            return
         mazo = self.session.query(Mazo).filter(Mazo.id == mazo_id).first()
         if not mazo:
             return

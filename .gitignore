@@ -7,6 +7,7 @@ __pycache__/
 *.exe
 !7za.exe
 *.iss
+!installer.iss
 
 # Build & Dist
 build/

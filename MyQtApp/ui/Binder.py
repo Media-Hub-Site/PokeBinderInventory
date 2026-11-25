@@ -9,7 +9,10 @@ from PyQt6.QtWidgets import (
     QDialog, QMessageBox, QColorDialog, QMenu, QFileDialog, QTabWidget
 )
 from PyQt6.QtCore import Qt, QMimeData, QPoint, QPointF, QSize, QEasingCurve, QPropertyAnimation, QRect, QRectF, QTimer, pyqtSignal
-from PyQt6.QtGui import QDrag, QPixmap, QCursor, QAction, QPainter, QLinearGradient, QColor, QPen, QShortcut, QKeySequence
+from PyQt6.QtGui import (
+    QDrag, QPixmap, QCursor, QAction, QPainter, QPainterPath,
+    QLinearGradient, QColor, QPen, QFont, QShortcut, QKeySequence
+)
 from sqlalchemy import func
 
 from MyQtApp.config import ASSETS_DIR, IMAGES_DIR, BINDER_DATA_FILE
@@ -26,6 +29,9 @@ from MyQtApp.ui.CardWidget import CardZoomOverlay, VariantBadgeButton, LanguageB
 from MyQtApp.ui.BinderCoverWidget import (
     BinderCoverWidget, BINDER_DESIGNS, resolve_design_key,
     BINDER_COVERS_DIR, get_design_default_interior_color
+)
+from MyQtApp.ui.AdvancedCoverStudio import (
+    AdvancedCoverStudioDialog, Interactive3DViewerDialog, normalize_advanced_design
 )
 from MyQtApp.ui.BinderBookAnimations import (
     BinderSpreadFrame,
@@ -992,6 +998,79 @@ class BinderPage(QWidget):
         return None
 
 
+class BinderInsideCoverWidget(QFrame):
+    """
+    Cara interior de la tapa delantera del Binder en el primer pliego (Issue #57).
+    Replica el mismo tamaño que BinderPage para que la primera página sea una sola hoja a la derecha.
+    """
+
+    def __init__(self, rows, cols, slot_w, slot_h, folder_name="Mi Binder", interior_color=None, parent=None):
+        super().__init__(parent)
+        self.folder_name = folder_name or "Mi Binder"
+        self.interior_color = interior_color or "#18181e"
+        w = cols * slot_w + (cols - 1) * 10 + 20
+        h = rows * slot_h + (rows - 1) * 10 + 20
+        self.setFixedSize(w, h)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        try:
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            rect = QRectF(self.rect()).adjusted(1, 1, -1, -1)
+
+            base_col = QColor(self.interior_color)
+            if not base_col.isValid():
+                base_col = QColor(24, 24, 30)
+
+            luma = 0.299 * base_col.red() + 0.587 * base_col.green() + 0.114 * base_col.blue()
+            text_col = QColor(45, 30, 40, 175) if luma > 155 else QColor(255, 255, 255, 165)
+            seam_col = QColor(20, 20, 30, 55) if luma > 155 else QColor(255, 255, 255, 38)
+
+            grad = QLinearGradient(rect.left(), rect.top(), rect.right(), rect.bottom())
+            grad.setColorAt(0.0, base_col.darker(118))
+            grad.setColorAt(0.6, base_col.darker(108))
+            grad.setColorAt(1.0, base_col.darker(126))
+            painter.setBrush(grad)
+            painter.setPen(QPen(seam_col, 1.2))
+            painter.drawRoundedRect(rect, 7, 7)
+
+            # Costura interior perimetral simulando forro de cuero/gamuza de portada
+            painter.setPen(QPen(seam_col, 1.0, Qt.PenStyle.DashLine))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRoundedRect(rect.adjusted(10, 10, -10, -10), 6, 6)
+
+            # Bolsillo interior inferior de portada (típico en binders reales)
+            pocket_h = rect.height() * 0.24
+            pocket_rect = QRectF(rect.left() + 14, rect.bottom() - pocket_h - 14, rect.width() - 28, pocket_h)
+            pocket_path = QPainterPath()
+            pocket_path.moveTo(pocket_rect.left(), pocket_rect.top() + 14)
+            pocket_path.lineTo(pocket_rect.right(), pocket_rect.top())
+            pocket_path.lineTo(pocket_rect.right(), pocket_rect.bottom())
+            pocket_path.lineTo(pocket_rect.left(), pocket_rect.bottom())
+            pocket_path.closeSubpath()
+            painter.setPen(QPen(seam_col, 1.1))
+            painter.setBrush(base_col.darker(132))
+            painter.drawPath(pocket_path)
+
+            # Emblema discreto de interior de portada
+            painter.setPen(text_col)
+            painter.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
+            painter.drawText(
+                QRectF(rect.left() + 18, rect.top() + rect.height() * 0.34, rect.width() - 36, 32),
+                Qt.AlignmentFlag.AlignCenter,
+                self.folder_name,
+            )
+            painter.setFont(QFont("Segoe UI", 8, QFont.Weight.DemiBold))
+            painter.setPen(QColor(text_col.red(), text_col.green(), text_col.blue(), 120))
+            painter.drawText(
+                QRectF(rect.left() + 18, rect.top() + rect.height() * 0.34 + 28, rect.width() - 36, 22),
+                Qt.AlignmentFlag.AlignCenter,
+                "POKEBINDER  •  INTERIOR PORTADA",
+            )
+        finally:
+            painter.end()
+
+
 class BinderView(QWidget):
     open_binder_in_print_requested = pyqtSignal(str, str)  # (folder_id, mode: "print" | "csv")
     inside_binder_changed = pyqtSignal(bool)
@@ -1431,11 +1510,12 @@ class BinderView(QWidget):
 
                         name, design, color, mode = self._get_current_folder_theme()
                         custom_image, _interior, locked = self._get_current_folder_extra()
+                        adv_design = self.get_user_folders().get(closing_folder_id, {}).get("advanced_design")
                         cover_w = max(140, int(board_local.width() * 0.5))
                         cover_h = max(180, int(board_local.height()))
                         cover_pix = render_transparent_cover_pixmap(
                             name, design, color, mode, cover_w, cover_h,
-                            custom_image=custom_image, locked=locked
+                            custom_image=custom_image, locked=locked, advanced_design=adv_design
                         )
 
                         # Cambiar a la estantería y calcular el destino exacto de la carpeta
@@ -1465,7 +1545,7 @@ class BinderView(QWidget):
 
                         if self._active_open_overlay:
                             try:
-                                self._active_open_overlay.deleteLater()
+                                self._active_open_overlay.cancel()
                             except Exception:
                                 pass
                             self._active_open_overlay = None
@@ -1483,13 +1563,64 @@ class BinderView(QWidget):
                             pages_bg_pixmap=pages_bg_pix,
                         )
                         self._active_open_overlay = overlay
-                        overlay.animation_finished.connect(lambda: setattr(self, "_active_open_overlay", None))
+                        overlay.animation_finished.connect(
+                            lambda target_ov=overlay: setattr(self, "_active_open_overlay", None) if self._active_open_overlay is target_ov else None
+                        )
                         return
                 except Exception as e:
                     print(f"Error en animación de cierre de binder: {e}")
 
         self.render_folders_grid()
         self.main_stack.setCurrentWidget(self.folders_view_widget)
+
+    def stop_active_animations(self):
+        """Detiene y limpia overlays de apertura/giro activos antes de cambiar de sección."""
+        ov = self._active_open_overlay
+        self._active_open_overlay = None
+        if ov is not None:
+            try:
+                if hasattr(ov, "cancel"):
+                    ov.cancel()
+                else:
+                    ov.hide()
+                    ov.deleteLater()
+            except Exception:
+                pass
+
+        flip_ov = self._active_flip_overlay
+        self._active_flip_overlay = None
+        if flip_ov is not None:
+            try:
+                if hasattr(flip_ov, "cancel"):
+                    flip_ov.cancel()
+                else:
+                    flip_ov.hide()
+                    flip_ov.deleteLater()
+            except Exception:
+                pass
+
+        if getattr(self, "_drag_turn_state", None):
+            try:
+                ns = self._drag_turn_state.get("new_spread")
+                if ns is not None:
+                    ns.deleteLater()
+            except Exception:
+                pass
+            self._drag_turn_state = None
+
+        try:
+            cur_sp = self.spread_stack.currentWidget() if hasattr(self, "spread_stack") else None
+            if cur_sp is not None:
+                cur_sp.setVisible(True)
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "btn_prev"):
+                self.btn_prev.setEnabled(self.current_spread_index > 0)
+            if hasattr(self, "btn_next"):
+                self.btn_next.setEnabled(True)
+        except Exception:
+            pass
 
     def _get_current_folder_theme(self) -> tuple[str, str, str, str]:
         """Retorna (name, design, color, mode) de la carpeta actual."""
@@ -1583,11 +1714,12 @@ class BinderView(QWidget):
             # Renderizar portada física transparente (sin esquinas blancas)
             name, design, color, mode = self._get_current_folder_theme()
             custom_image, _interior, locked = self._get_current_folder_extra()
+            adv_design = self.get_user_folders().get(self.current_folder_id, {}).get("advanced_design")
             cover_w = max(140, int(board_local.width() * 0.5))
             cover_h = max(180, int(board_local.height()))
             cover_pix = render_transparent_cover_pixmap(
                 name, design, color, mode, cover_w, cover_h,
-                custom_image=custom_image, locked=locked
+                custom_image=custom_image, locked=locked, advanced_design=adv_design
             )
 
             # Mapear el rectángulo del binder a coordenadas de self.main_stack
@@ -1601,7 +1733,7 @@ class BinderView(QWidget):
 
             if self._active_open_overlay:
                 try:
-                    self._active_open_overlay.deleteLater()
+                    self._active_open_overlay.cancel()
                 except Exception:
                     pass
                 self._active_open_overlay = None
@@ -1620,8 +1752,9 @@ class BinderView(QWidget):
             )
             self._active_open_overlay = overlay
 
-            def _on_open_done():
-                self._active_open_overlay = None
+            def _on_open_done(target_ov=overlay):
+                if self._active_open_overlay is target_ov:
+                    self._active_open_overlay = None
                 try:
                     if current_spread:
                         current_spread.setVisible(True)
@@ -1897,7 +2030,7 @@ class BinderView(QWidget):
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(6)
 
-        # Portada física realista del Binder (Issue #13 / #21)
+        # Portada física realista del Binder (Issue #13 / #21 / #52)
         cover = BinderCoverWidget(
             name=name,
             design=design,
@@ -1905,6 +2038,7 @@ class BinderView(QWidget):
             mode=mode,
             custom_image=custom_image,
             locked=locked,
+            advanced_design=f_data.get("advanced_design"),
             parent=frame,
         )
         cover.setFixedSize(196, 212)
@@ -1972,22 +2106,43 @@ class BinderView(QWidget):
 
         layout.addLayout(bottom_row)
 
-        # Hover sincronizado con la portada física 3D
+        # Hover sincronizado con la portada física 3D + Long-Press para Vista 3D completa (Issue #52)
+        long_press_timer = QTimer(frame)
+        long_press_timer.setSingleShot(True)
+        press_state = {"triggered": False}
+
+        def on_long_press():
+            press_state["triggered"] = True
+            self._abrir_vista_3d_binder(f_id)
+
+        long_press_timer.timeout.connect(on_long_press)
+
         def on_enter(event):
             cover.set_hovered(True)
             QFrame.enterEvent(frame, event)
 
         def on_leave(event):
+            long_press_timer.stop()
             cover.set_hovered(False)
             QFrame.leaveEvent(frame, event)
 
-        def on_frame_click(event):
+        def on_frame_press(event):
             if event.button() == Qt.MouseButton.LeftButton:
-                self.abrir_carpeta(f_id, origin_widget=cover)
+                press_state["triggered"] = False
+                long_press_timer.start(450)
+
+        def on_frame_release(event):
+            if event.button() == Qt.MouseButton.LeftButton:
+                was_long = press_state["triggered"]
+                long_press_timer.stop()
+                if not was_long and frame.rect().contains(event.pos()):
+                    self.abrir_carpeta(f_id, origin_widget=cover)
 
         frame.enterEvent = on_enter
         frame.leaveEvent = on_leave
-        frame.mousePressEvent = on_frame_click
+        frame.mousePressEvent = on_frame_press
+        frame.mouseReleaseEvent = on_frame_release
+        frame.setToolTip(t("Clic para abrir  •  Mantén pulsado para ver en 3D"))
 
         return frame
 
@@ -2049,6 +2204,10 @@ class BinderView(QWidget):
         act_edit.triggered.connect(lambda: self.abrir_dialogo_editar_carpeta(folder_id))
         menu.addAction(act_edit)
 
+        act_3d = QAction(t("Ver en 3D"), menu)
+        act_3d.triggered.connect(lambda: self._abrir_vista_3d_binder(folder_id))
+        menu.addAction(act_3d)
+
         act_dup = QAction(t("Duplicar"), menu)
         act_dup.triggered.connect(lambda: self._duplicar_carpeta(folder_id))
         menu.addAction(act_dup)
@@ -2067,6 +2226,43 @@ class BinderView(QWidget):
         menu.addAction(act_del)
 
         menu.exec(anchor_btn.mapToGlobal(QPoint(0, anchor_btn.height() + 2)))
+
+    def _abrir_vista_3d_binder(self, folder_id: str):
+        """Abre el Binder completo en el visor interactivo 3D (Issue #52)."""
+        folders = self.get_user_folders()
+        f_data = folders.get(folder_id)
+        if not f_data:
+            return
+        name = f_data.get("name", "Mi Binder")
+        design = resolve_design_key(f_data.get("design", "Charizard Fuego"))
+        color = f_data.get("color", "auto")
+        mode = f_data.get("mode", "3x3")
+        custom_image = f_data.get("custom_image") or None
+        locked = bool(f_data.get("locked", False))
+        adv = normalize_advanced_design(f_data.get("advanced_design"))
+
+        temp_cover = BinderCoverWidget(
+            name=name,
+            design=design,
+            color=color,
+            mode=mode,
+            custom_image=custom_image,
+            locked=locked,
+            advanced_design=adv,
+        )
+        _cfg, _base, spine_col, _strap, _a1, _a2 = temp_cover._effective_colors()
+        front_pix = temp_cover.render_face_pixmap("front", 380, 500, adv.get("back_color"), include_advanced=True)
+        back_pix = temp_cover.render_face_pixmap("back", 380, 500, adv.get("back_color"), include_advanced=True)
+        dlg = Interactive3DViewerDialog(
+            title=name,
+            front_pixmap=front_pix,
+            back_pixmap=back_pix,
+            spine_color=spine_col.name(),
+            edge_color="#e2e8f0",
+            item_type="binder",
+            parent=self,
+        )
+        dlg.exec()
 
     def _toggle_bloquear_carpeta(self, folder_id: str):
         folders = self.get_user_folders()
@@ -2264,6 +2460,7 @@ class BinderView(QWidget):
         init_mode = existing.get("mode", "3x3") if editing else "3x3"
         init_color = existing.get("color", "auto") if editing else "auto"
         init_custom_image = existing.get("custom_image") if editing else None
+        init_advanced = normalize_advanced_design(existing.get("advanced_design") if editing else None)
         init_interior = (
             existing.get("interior_color")
             if editing and existing.get("interior_color")
@@ -2298,6 +2495,7 @@ class BinderView(QWidget):
             color=init_color,
             mode=init_mode,
             custom_image=init_custom_image,
+            advanced_design=init_advanced,
             parent=preview_panel,
         )
         live_preview.setFixedSize(190, 246)
@@ -2373,6 +2571,7 @@ class BinderView(QWidget):
             "custom_image": init_custom_image,
             "interior_color": init_interior,
             "interior_overridden": bool(editing and existing.get("interior_color")),
+            "advanced_design": init_advanced,
         }
 
         # Pestañas: Predefinidos vs Personalizar
@@ -2512,6 +2711,7 @@ class BinderView(QWidget):
                     color=state["custom_color"],
                     mode=combo_tamano.currentText(),
                     custom_image=state["custom_image"],
+                    advanced_design=state["advanced_design"],
                 )
             else:
                 live_preview.set_binder_props(
@@ -2520,6 +2720,7 @@ class BinderView(QWidget):
                     color="auto",
                     mode=combo_tamano.currentText(),
                     custom_image=None,
+                    advanced_design=state["advanced_design"],
                 )
 
         def choose_cover_color():
@@ -2576,6 +2777,42 @@ class BinderView(QWidget):
 
         btn_row = QHBoxLayout()
         btn_row.setSpacing(10)
+
+        def open_advanced_studio():
+            refresh_ui()
+            studio = AdvancedCoverStudioDialog(
+                item_type="binder",
+                name=txt_nombre.text().strip() or "Mi Binder",
+                design_name=combo_diseno.currentText(),
+                custom_color=state["custom_color"],
+                custom_image=state["custom_image"] if tabs.currentIndex() == 1 else None,
+                advanced_design=state["advanced_design"],
+                face_renderer=live_preview.render_face_pixmap,
+                parent=dlg,
+            )
+            if studio.exec() == QDialog.DialogCode.Accepted:
+                state["advanced_design"] = studio.get_advanced_design()
+                refresh_ui()
+
+        btn_advanced = QPushButton(t("Avanzado"))
+        btn_advanced.setFixedHeight(36)
+        btn_advanced.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_advanced.setToolTip(t("Personalización avanzada con stickers, figuras, parte trasera y vista 3D"))
+        btn_advanced.setStyleSheet("""
+            QPushButton {
+                background-color: #0ea5e9;
+                color: #ffffff;
+                border: 2px solid #0284c7;
+                border-radius: 10px;
+                padding: 4px 16px;
+                font-weight: 700;
+            }
+            QPushButton:hover {
+                background-color: #0284c7;
+            }
+        """)
+        btn_advanced.clicked.connect(open_advanced_studio)
+
         btn_cancel = QPushButton(t("Cancelar"))
         btn_cancel.setFixedHeight(36)
         btn_cancel.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -2646,15 +2883,20 @@ class BinderView(QWidget):
 
             if editing:
                 f_obj = folders[edit_folder_id]
+                old_mode = f_obj.get("mode", "3x3")
                 f_obj["name"] = nombre
                 f_obj["design"] = final_design
                 f_obj["color"] = final_color
                 f_obj["custom_image"] = final_custom_image
                 f_obj["interior_color"] = final_interior
                 f_obj["mode"] = final_mode
+                f_obj["advanced_design"] = state["advanced_design"]
                 f_obj.setdefault("cards", {"2x2": {}, "3x3": {}, "3x4": {}, "4x4": {}})
                 for m_key in ("2x2", "3x3", "3x4", "4x4"):
                     f_obj["cards"].setdefault(m_key, {})
+
+                if old_mode != final_mode:
+                    self._reflow_folder_cards_for_mode(f_obj, old_mode, final_mode)
 
                 self.save_binder_data()
                 self.render_folders_grid()
@@ -2663,7 +2905,14 @@ class BinderView(QWidget):
                 # Si estamos editando el binder actualmente abierto, refrescar en vivo
                 if self.current_folder_id == edit_folder_id and self.main_stack.currentWidget() == self.binder_pages_widget:
                     self.current_mode = final_mode
+                    if old_mode != final_mode:
+                        self.current_spread_index = 0
+                        if hasattr(self, "selected_slot"):
+                            self.selected_slot = None
+                        if hasattr(self, "btn_quitar"):
+                            self.btn_quitar.setEnabled(False)
                     self.update_spread(direction=0)
+                    self.actualizar_resumen_precios_binder()
 
                 show_toast(f"{t('Binder actualizado')}: {nombre}", "success")
                 dlg.accept()
@@ -2676,6 +2925,7 @@ class BinderView(QWidget):
                     "design": final_design,
                     "custom_image": final_custom_image,
                     "interior_color": final_interior,
+                    "advanced_design": state["advanced_design"],
                     "locked": False,
                     "mode": final_mode,
                     "cards": {
@@ -2695,6 +2945,8 @@ class BinderView(QWidget):
                 self.abrir_carpeta(new_id)
 
         btn_save.clicked.connect(on_save)
+        btn_row.addWidget(btn_advanced)
+        btn_row.addStretch()
         btn_row.addWidget(btn_cancel)
         btn_row.addWidget(btn_save)
         form_layout.addLayout(btn_row)
@@ -2856,9 +3108,7 @@ class BinderView(QWidget):
         self.btn_prev.setText(t("Anterior"))
         self.btn_next.setText(t("Siguiente"))
         self.btn_quitar.setText(t("Quitar") if not self.get_selected_slots() else f"{t('Quitar')} ({len(self.get_selected_slots())})")
-        p_idx_1 = self.current_spread_index * 2
-        p_idx_2 = p_idx_1 + 1
-        self.lbl_pages.setText(f"{t('Página')} {p_idx_1 + 1} - {p_idx_2 + 1}")
+        self.lbl_pages.setText(self._format_spread_label(self.current_spread_index))
         if hasattr(self.inventory, 'retranslate_ui'):
             self.inventory.retranslate_ui()
         if hasattr(self, 'btn_back_to_folders'):
@@ -2909,6 +3159,51 @@ class BinderView(QWidget):
         with open(BINDER_DATA_FILE, 'w', encoding='utf-8') as f:
             json.dump(self.binder_data, f, indent=4)
             
+    def _reflow_folder_cards_for_mode(self, folder_obj: dict, old_mode: str, new_mode: str) -> None:
+        """
+        Reajusta (reflow) las cartas del binder al cambiar su cuadrícula (ej. 3x3 -> 2x2,
+        2x2 -> 3x3, 3x4 -> 4x4, etc.) preservando el orden secuencial (página, bolsillo)
+        para que todas las cartas se mantengan visibles y no existan cuadrículas separadas.
+        """
+        if not folder_obj or old_mode == new_mode or new_mode not in BINDER_MODES:
+            return
+
+        cards_by_mode = folder_obj.setdefault("cards", {})
+        for m_key in BINDER_MODES:
+            cards_by_mode.setdefault(m_key, {})
+
+        old_cards = cards_by_mode.get(old_mode, {})
+        if not old_cards:
+            # Si el modo anterior estaba vacío, conservar lo que pudiera existir en new_mode
+            return
+
+        ordered_entries = []
+        for raw_key, card_entry in old_cards.items():
+            if card_entry is None:
+                continue
+            try:
+                p_str, s_str = str(raw_key).split("_", 1)
+                page_idx = int(p_str)
+                slot_idx = int(s_str)
+            except (ValueError, TypeError):
+                page_idx, slot_idx = 10**9, 10**9
+            ordered_entries.append((page_idx, slot_idx, str(raw_key), card_entry))
+
+        ordered_entries.sort(key=lambda item: (item[0], item[1], item[2]))
+
+        new_cfg = BINDER_MODES[new_mode]
+        slots_per_page = max(1, int(new_cfg["rows"]) * int(new_cfg["cols"]))
+
+        reflowed = {}
+        for idx, (_p, _s, _k, card_entry) in enumerate(ordered_entries):
+            new_page = idx // slots_per_page
+            new_slot = idx % slots_per_page
+            reflowed[f"{new_page}_{new_slot}"] = copy.deepcopy(card_entry)
+
+        for m_key in BINDER_MODES:
+            cards_by_mode[m_key] = {}
+        cards_by_mode[new_mode] = reflowed
+
     def _get_current_cards_dict(self, mode=None) -> dict:
         folders = self.get_user_folders()
         folder = folders.setdefault(self.current_folder_id, {})
@@ -3076,8 +3371,21 @@ class BinderView(QWidget):
                 
         self.anim_opacity_new.finished.connect(on_finished)
         
+    def _spread_page_indices(self, spread_index: int) -> tuple[int | None, int]:
+        """Retorna (p_idx_left, p_idx_right). En el pliego 0, la izquierda es interior de portada (None) y la derecha es página 0."""
+        if spread_index <= 0:
+            return None, 0
+        p1 = spread_index * 2 - 1
+        return p1, p1 + 1
+
+    def _format_spread_label(self, spread_index: int) -> str:
+        p_left, p_right = self._spread_page_indices(spread_index)
+        if p_left is None:
+            return f"{t('Portada')}  |  {t('Página')} {p_right + 1}"
+        return f"{t('Página')} {p_left + 1} - {p_right + 1}"
+
     def create_spread_widget(self, spread_index, mode=None):
-        _, design, color, _ = self._get_current_folder_theme()
+        folder_name, design, color, _ = self._get_current_folder_theme()
         _custom_img, interior_color, _locked = self._get_current_folder_extra()
         spread_widget = BinderSpreadFrame(
             design=design,
@@ -3089,23 +3397,34 @@ class BinderView(QWidget):
         spread_widget.drag_turn_moved.connect(self._on_drag_turn_moved)
         spread_widget.drag_turn_released.connect(self._on_drag_turn_released)
 
-        p_idx_1 = spread_index * 2
-        p_idx_2 = p_idx_1 + 1
+        p_idx_1, p_idx_2 = self._spread_page_indices(spread_index)
 
         target_mode = mode if mode else self.current_mode
         cfg = BINDER_MODES[target_mode]
 
-        page_left = BinderPage(
-            p_idx_1, self,
-            rows=cfg["rows"],
-            cols=cfg["cols"],
-            slot_w=cfg["slot_w"],
-            slot_h=cfg["slot_h"],
-            card_w=cfg["card_w"],
-            card_h=cfg["card_h"],
-            is_left=True,
-            interior_color=interior_color,
-        )
+        if p_idx_1 is None:
+            page_left = BinderInsideCoverWidget(
+                rows=cfg["rows"],
+                cols=cfg["cols"],
+                slot_w=cfg["slot_w"],
+                slot_h=cfg["slot_h"],
+                folder_name=folder_name,
+                interior_color=interior_color,
+            )
+        else:
+            page_left = BinderPage(
+                p_idx_1, self,
+                rows=cfg["rows"],
+                cols=cfg["cols"],
+                slot_w=cfg["slot_w"],
+                slot_h=cfg["slot_h"],
+                card_w=cfg["card_w"],
+                card_h=cfg["card_h"],
+                is_left=True,
+                interior_color=interior_color,
+            )
+            self.populate_page(page_left, p_idx_1, target_mode)
+
         page_right = BinderPage(
             p_idx_2, self,
             rows=cfg["rows"],
@@ -3117,9 +3436,6 @@ class BinderView(QWidget):
             is_left=False,
             interior_color=interior_color,
         )
-
-        # Populate slots
-        self.populate_page(page_left, p_idx_1, target_mode)
         self.populate_page(page_right, p_idx_2, target_mode)
 
         spread_widget.spread_layout.addWidget(page_left)
@@ -3131,9 +3447,7 @@ class BinderView(QWidget):
         new_spread, new_left, new_right = self.create_spread_widget(self.current_spread_index)
 
         # UI controls update
-        p_idx_1 = self.current_spread_index * 2
-        p_idx_2 = p_idx_1 + 1
-        self.lbl_pages.setText(f"{t('Página')} {p_idx_1 + 1} - {p_idx_2 + 1}")
+        self.lbl_pages.setText(self._format_spread_label(self.current_spread_index))
         self.btn_prev.setEnabled(self.current_spread_index > 0)
         self.btn_next.setEnabled(True)
         self.refresh_page_minimap()
@@ -3333,9 +3647,7 @@ class BinderView(QWidget):
                 state["current_spread"].deleteLater()
                 self.page_left = state["new_left"]
                 self.page_right = state["new_right"]
-                p_idx_1 = self.current_spread_index * 2
-                p_idx_2 = p_idx_1 + 1
-                self.lbl_pages.setText(f"{t('Página')} {p_idx_1 + 1} - {p_idx_2 + 1}")
+                self.lbl_pages.setText(self._format_spread_label(self.current_spread_index))
                 self.refresh_page_minimap()
             else:
                 state["new_spread"].deleteLater()
@@ -3437,10 +3749,11 @@ class BinderView(QWidget):
                     self.set_card_at(src_page, src_slot, None)
                     
                     # Clear old slot in UI (if it's on the currently visible pages)
+                    p_l, p_r = self._spread_page_indices(self.current_spread_index)
                     src_page_widget = None
-                    if src_page == self.current_spread_index * 2:
+                    if p_l is not None and src_page == p_l:
                         src_page_widget = self.page_left
-                    elif src_page == self.current_spread_index * 2 + 1:
+                    elif src_page == p_r:
                         src_page_widget = self.page_right
                         
                     if src_page_widget:
@@ -3454,10 +3767,11 @@ class BinderView(QWidget):
         self.set_card_at(page_idx, slot_idx, card_data_entry)
         
         # Find the specific slot widget
+        p_l, p_r = self._spread_page_indices(self.current_spread_index)
         target_page_widget = None
-        if page_idx == self.current_spread_index * 2:
+        if p_l is not None and page_idx == p_l:
             target_page_widget = self.page_left
-        elif page_idx == self.current_spread_index * 2 + 1:
+        elif page_idx == p_r:
             target_page_widget = self.page_right
             
         if target_page_widget:

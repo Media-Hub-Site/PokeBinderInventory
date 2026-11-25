@@ -1,7 +1,7 @@
 from PyQt6.QtWidgets import (
     QWidget, QLabel, QVBoxLayout, QScrollArea, QGridLayout,
     QHBoxLayout, QLineEdit, QComboBox, QPushButton, QGraphicsOpacityEffect,
-    QSizePolicy
+    QSizePolicy, QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView
 )
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QPropertyAnimation, QUrl, QEasingCurve
@@ -12,7 +12,7 @@ from MyQtApp.app.getImgs import (
     get_pixmap_from_zip, get_webp_pixmap, get_card_placeholder_pixmap,
     has_exact_lang_image, CardImageLoaderManager
 )
-from MyQtApp.ui.CardWidget import ClickableLabel, CardItemWidget, VariantLegendBar
+from MyQtApp.ui.CardWidget import ClickableLabel, CardItemWidget, VariantLegendBar, CardZoomOverlay
 from MyQtApp.ui.FilterVisualBar import EnergyTypeFilterBar
 from ..session import SessionLocal
 from ..models import Cartas  # tu modelo SQLAlchemy
@@ -35,6 +35,9 @@ class GaleriaCartas(QWidget):
         self.cartas_seleccionadas = set()
         self.current_page = 0
         self.total_cartas = 0
+        self._active_generation = None
+        self._view_mode = "grid"  # "grid" | "list"
+        self._current_cards_map = {}
 
         self.image_loader = CardImageLoaderManager(max_threads=6, parent=self)
         self.image_loader.image_ready.connect(self._on_async_image_ready)
@@ -112,9 +115,10 @@ class GaleriaCartas(QWidget):
 
         header_vbox.addLayout(row2)
 
-        # Barra complementaria de filtros visuales por Energía Pokémon + Zoom rápido (Etapa 2)
+        # Barra complementaria de filtros visuales por Energía / Generación Pokémon + Zoom rápido (Etapa 2 / Issue #54)
         self.energy_bar = EnergyTypeFilterBar(self)
         self.energy_bar.type_selected.connect(self._on_energy_pill_selected)
+        self.energy_bar.generation_selected.connect(self._on_generation_pill_selected)
         self.energy_bar.zoom_changed.connect(self._on_zoom_changed)
         self.filtros[Cartas.type].currentIndexChanged.connect(self._sync_energy_bar_from_combo)
         header_vbox.addWidget(self.energy_bar)
@@ -134,6 +138,57 @@ class GaleriaCartas(QWidget):
         self.grid = QGridLayout(self.container)
         self.scroll.setWidget(self.container)
         self.main_layout.addWidget(self.scroll, stretch=1)
+
+        # Vista de Lista tipo Excel con columnas ajustables (Issue #58)
+        self.list_table = QTableWidget()
+        self.list_table.setColumnCount(9)
+        self.list_table.setHorizontalHeaderLabels([
+            t("#Dex"), t("Nombre"), t("Tipo"), t("Generación"),
+            t("Rareza"), t("Edición"), t("Etapa"), t("Idioma"), t("Precio (USD)")
+        ])
+        self.list_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.list_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.list_table.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
+        self.list_table.setAlternatingRowColors(True)
+        self.list_table.setShowGrid(True)
+        self.list_table.verticalHeader().setVisible(False)
+        self.list_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.list_table.horizontalHeader().setStretchLastSection(True)
+        self.list_table.setColumnWidth(0, 58)
+        self.list_table.setColumnWidth(1, 210)
+        self.list_table.setColumnWidth(2, 90)
+        self.list_table.setColumnWidth(3, 95)
+        self.list_table.setColumnWidth(4, 130)
+        self.list_table.setColumnWidth(5, 160)
+        self.list_table.setColumnWidth(6, 90)
+        self.list_table.setColumnWidth(7, 65)
+        self.list_table.setStyleSheet("""
+            QTableWidget {
+                background-color: #ffffff;
+                alternate-background-color: #fff6f8;
+                color: #3f2730;
+                gridline-color: #f3c8d1;
+                border: 1.5px solid #f2b8c3;
+                border-radius: 10px;
+                font-size: 12px;
+                selection-background-color: #fde0e7;
+                selection-color: #5a2a3a;
+            }
+            QHeaderView::section {
+                background-color: #ffeef2;
+                color: #5a2a3a;
+                font-weight: 700;
+                font-size: 12px;
+                padding: 6px 8px;
+                border: none;
+                border-right: 1px solid #f2b8c3;
+                border-bottom: 1.5px solid #f2b8c3;
+            }
+        """)
+        self.list_table.itemSelectionChanged.connect(self._on_list_selection_changed)
+        self.list_table.cellDoubleClicked.connect(self._on_list_double_clicked)
+        self.list_table.setVisible(False)
+        self.main_layout.addWidget(self.list_table, stretch=1)
 
         # Paginación
         paginacion_layout = QHBoxLayout()
@@ -203,6 +258,9 @@ class GaleriaCartas(QWidget):
             if val := self._get_filter_value(combo):
                 query = query.filter(col == val)
 
+        if getattr(self, "_active_generation", None):
+            query = query.filter(Cartas.generacion.ilike(f"%{self._active_generation}%"))
+
         self.total_cartas = query.count()
 
     def actualizar_con_transicion(self):
@@ -246,9 +304,35 @@ class GaleriaCartas(QWidget):
             if val := self._get_filter_value(combo):
                 query = query.filter(col == val)
 
+        if getattr(self, "_active_generation", None):
+            query = query.filter(Cartas.generacion.ilike(f"%{self._active_generation}%"))
+
+        # Issue #55: Ordenar por número de Pokédex cuando hay filtro de Generación o Energía/Tipo
+        has_gen_filter = bool(getattr(self, "_active_generation", None))
+        has_type_filter = bool(self._get_filter_value(self.filtros[Cartas.type]))
+        if has_gen_filter or has_type_filter:
+            query = query.order_by(
+                Cartas.pokedex_id.is_(None),
+                Cartas.pokedex_id.asc(),
+                Cartas.nombre.asc(),
+            )
+
         cartas = query.limit(self.CARTAS_POR_PAGINA)\
                       .offset(self.current_page * self.CARTAS_POR_PAGINA)\
                       .all()
+
+        self._current_cards_map.clear()
+        for c in cartas:
+            c_lang = c.idioma or language_manager.current_language
+            self._current_cards_map[f"{c.id_api}:{c_lang}"] = c
+
+        if self._view_mode == "list":
+            self._populate_list_table(cartas)
+            total_paginas = max(1, (self.total_cartas + self.CARTAS_POR_PAGINA - 1) // self.CARTAS_POR_PAGINA)
+            self.lbl_pagina.setText(f"{t('Página')} {self.current_page+1} {t('de')} {total_paginas}")
+            self.btn_anterior.setEnabled(self.current_page > 0)
+            self.btn_siguiente.setEnabled(self.current_page < total_paginas - 1)
+            return
 
         row, col = 0, 0
         for carta in cartas:
@@ -323,6 +407,81 @@ class GaleriaCartas(QWidget):
             combo.setCurrentIndex(idx if idx >= 0 else 0)
         combo.blockSignals(False)
         self.reset_page_and_actualizar()
+
+    def _on_generation_pill_selected(self, gen_val):
+        """Aplica el filtro rápido por Generación Pokémon (Issue #54)."""
+        self._active_generation = gen_val or None
+        self.reset_page_and_actualizar()
+
+    def set_view_mode(self, mode: str):
+        """Alterna entre vista de cuadrícula con imágenes ('grid') y vista de tabla ('list') (Issue #58)."""
+        if mode not in ("grid", "list") or self._view_mode == mode:
+            return
+        self._view_mode = mode
+        is_list = mode == "list"
+        self.scroll.setVisible(not is_list)
+        self.list_table.setVisible(is_list)
+        self.actualizar_galeria()
+
+    def _populate_list_table(self, cartas):
+        self.list_table.blockSignals(True)
+        self.list_table.setRowCount(len(cartas))
+        for r_idx, carta in enumerate(cartas):
+            card_lang = carta.idioma or language_manager.current_language
+            card_key = f"{carta.id_api}:{card_lang}"
+            dex_txt = f"#{carta.pokedex_id:04d}" if getattr(carta, "pokedex_id", None) else "-"
+            price_val = f"${float(carta.price):,.2f}" if carta.price else "-"
+            vals = [
+                dex_txt,
+                carta.nombre or "",
+                carta.type or "-",
+                getattr(carta, "generacion", None) or "-",
+                carta.rarity or "-",
+                carta.edition or carta.set_name or "-",
+                carta.stage or "-",
+                (card_lang or "").upper(),
+                price_val,
+            ]
+            for c_idx, txt in enumerate(vals):
+                item = QTableWidgetItem(txt)
+                if c_idx == 0:
+                    item.setData(Qt.ItemDataRole.UserRole, card_key)
+                if c_idx in (0, 7, 8):
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.list_table.setItem(r_idx, c_idx, item)
+            if card_key in self.cartas_seleccionadas:
+                self.list_table.selectRow(r_idx)
+        self.list_table.blockSignals(False)
+
+    def _on_list_selection_changed(self):
+        page_keys = {
+            self.list_table.item(r, 0).data(Qt.ItemDataRole.UserRole)
+            for r in range(self.list_table.rowCount())
+            if self.list_table.item(r, 0)
+        }
+        selected_rows = {idx.row() for idx in self.list_table.selectedIndexes()}
+        selected_page_keys = {
+            self.list_table.item(r, 0).data(Qt.ItemDataRole.UserRole)
+            for r in selected_rows
+            if self.list_table.item(r, 0)
+        }
+        self.cartas_seleccionadas -= page_keys
+        self.cartas_seleccionadas |= selected_page_keys
+
+    def _on_list_double_clicked(self, row: int, _col: int):
+        item = self.list_table.item(row, 0)
+        if not item:
+            return
+        card_key = item.data(Qt.ItemDataRole.UserRole)
+        carta = self._current_cards_map.get(card_key)
+        if not carta:
+            return
+        c_lang = carta.idioma or language_manager.current_language
+        pix = get_webp_pixmap(carta.id_api, carta.nombre, c_lang, size=(360, 500), allow_lang_fallback=True)
+        if not pix or pix.isNull():
+            pix = get_card_placeholder_pixmap((360, 500), carta.nombre)
+        overlay = CardZoomOverlay(carta, pix, self.window())
+        overlay.show()
 
     def _sync_energy_bar_from_combo(self):
         """Sincroniza la barra visual de energías cuando cambia el QComboBox de Tipo."""
@@ -413,6 +572,25 @@ class GaleriaCartas(QWidget):
 
     def toggle_seleccionar_pagina(self):
         """Selecciona o deselecciona todas las cartas actualmente desplegadas en la página."""
+        if self._view_mode == "list":
+            page_keys = {
+                self.list_table.item(r, 0).data(Qt.ItemDataRole.UserRole)
+                for r in range(self.list_table.rowCount())
+                if self.list_table.item(r, 0)
+            }
+            if not page_keys:
+                return
+            all_selected = page_keys.issubset(self.cartas_seleccionadas)
+            self.list_table.blockSignals(True)
+            if all_selected:
+                self.cartas_seleccionadas -= page_keys
+                self.list_table.clearSelection()
+            else:
+                self.cartas_seleccionadas |= page_keys
+                self.list_table.selectAll()
+            self.list_table.blockSignals(False)
+            return
+
         if not self.labels_por_id:
             return
 
@@ -457,6 +635,10 @@ class GaleriaCartas(QWidget):
 
     def limpiar_seleccion(self):
         self.cartas_seleccionadas.clear()
+        if hasattr(self, "list_table"):
+            self.list_table.blockSignals(True)
+            self.list_table.clearSelection()
+            self.list_table.blockSignals(False)
         for key, labels in self.labels_por_id.items():
             if isinstance(labels, list):
                 for lbl in labels:

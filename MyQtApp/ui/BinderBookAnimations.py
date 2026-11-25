@@ -428,11 +428,14 @@ class PageFlipAnimationOverlay(QWidget):
         self._anim = None
         self._sfx = None
         self._sound_played = False
+        self._finished = False
 
         self.show()
         self.raise_()
 
     def set_progress(self, value: float):
+        if self._finished:
+            return
         self._progress = max(0.0, min(1.0, float(value)))
         if not self._sound_played and self._progress >= 0.25:
             self._sound_played = True
@@ -444,6 +447,8 @@ class PageFlipAnimationOverlay(QWidget):
 
     def start_auto_flip(self, duration_ms: int = 520, start_val: float = 0.0, end_val: float = 1.0):
         """Anima automáticamente el giro desde start_val hasta end_val."""
+        if self._finished:
+            return
         if self._anim and self._anim.state() == QVariantAnimation.State.Running:
             self._anim.stop()
 
@@ -461,7 +466,24 @@ class PageFlipAnimationOverlay(QWidget):
         self.set_progress(float(val))
 
     def _finish(self, completed: bool):
+        if self._finished:
+            return
+        self._finished = True
         self.flip_completed.emit(completed)
+        self.hide()
+        self.deleteLater()
+
+    def cancel(self):
+        """Detiene el giro de página de forma segura sin emitir señales."""
+        if self._finished:
+            return
+        self._finished = True
+        try:
+            if self._anim is not None:
+                self._anim.blockSignals(True)
+                self._anim.stop()
+        except Exception:
+            pass
         self.hide()
         self.deleteLater()
 
@@ -676,7 +698,7 @@ class PageFlipAnimationOverlay(QWidget):
 
 def render_transparent_cover_pixmap(
     name: str, design: str, color: str, mode: str, width: int, height: int,
-    custom_image: str = None, locked: bool = False
+    custom_image: str = None, locked: bool = False, advanced_design: dict = None
 ) -> QPixmap:
     """Renderiza la portada física BinderCoverWidget sobre un QPixmap transparente (sin bordes blancos)."""
     from MyQtApp.ui.BinderCoverWidget import BinderCoverWidget
@@ -688,7 +710,7 @@ def render_transparent_cover_pixmap(
 
     temp = BinderCoverWidget(
         name=name, design=design, color=color, mode=mode,
-        custom_image=custom_image, locked=locked
+        custom_image=custom_image, locked=locked, advanced_design=advanced_design
     )
     temp.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
     temp.resize(w, h)
@@ -746,6 +768,7 @@ class BinderOpenAnimationOverlay(QWidget):
             max(160, int(self.board_rect.height())),
         )
 
+        self._finished = False
         self.show()
         self.raise_()
 
@@ -797,6 +820,8 @@ class BinderOpenAnimationOverlay(QWidget):
         return pix
 
     def _on_tick(self, val):
+        if self._finished:
+            return
         self._progress = float(val)
         if not self._sound_played:
             if (not self.reverse and self._progress >= 0.34) or (self.reverse and self._progress <= 0.72):
@@ -805,7 +830,24 @@ class BinderOpenAnimationOverlay(QWidget):
         self.update()
 
     def _on_done(self):
+        if self._finished:
+            return
+        self._finished = True
         self.animation_finished.emit()
+        self.hide()
+        self.deleteLater()
+
+    def cancel(self):
+        """Detiene la animación de apertura/cierre de forma segura sin emitir señales."""
+        if self._finished:
+            return
+        self._finished = True
+        try:
+            if self._anim is not None:
+                self._anim.blockSignals(True)
+                self._anim.stop()
+        except Exception:
+            pass
         self.hide()
         self.deleteLater()
 
@@ -1007,6 +1049,7 @@ class CardSlideInOverlay(QWidget):
         self._progress = 1.0 if self.reverse else 0.0
         self._sfx = play_sleeve_insert_sound(self)
 
+        self._finished = False
         self.show()
         self.raise_()
 
@@ -1142,20 +1185,25 @@ class _SpreadMinimapPill(QWidget):
         painter.setPen(QPen(border, 1.4 if self.is_active else 1.0))
         painter.drawRoundedRect(rect, 7.0, 7.0)
 
-        # Números de página (ej. 1-2)
-        p1 = self.spread_idx * 2 + 1
-        p2 = p1 + 1
+        # Números de página (Spread 0 = Portada | 1, Spread >= 1 = 2-3, 4-5, ...)
+        if self.spread_idx == 0:
+            lbl_txt = "1"
+        else:
+            p1 = self.spread_idx * 2
+            p2 = p1 + 1
+            lbl_txt = f"{p1}-{p2}"
         painter.setPen(txt_color)
         font = painter.font()
         font.setPointSize(8)
         font.setBold(self.is_active)
         painter.setFont(font)
-        painter.drawText(QRectF(2, 1, self.width() - 4, 15), Qt.AlignmentFlag.AlignCenter, f"{p1}-{p2}")
+        painter.drawText(QRectF(2, 1, self.width() - 4, 15), Qt.AlignmentFlag.AlignCenter, lbl_txt)
 
         # Dos mini barras de ocupación (página izquierda y página derecha)
         bar_y = self.height() - 6.0
         bar_w = (self.width() - 14.0) * 0.5
-        for idx, ratio in enumerate((self.left_ratio, self.right_ratio)):
+        ratios = (0.0, self.right_ratio) if self.spread_idx == 0 else (self.left_ratio, self.right_ratio)
+        for idx, ratio in enumerate(ratios):
             bx = 5.0 + idx * (bar_w + 4.0)
             track_color = QColor(255, 255, 255, 75) if self.is_active else QColor("#f3d5dc")
             painter.setPen(Qt.PenStyle.NoPen)
@@ -1208,16 +1256,20 @@ class BinderPageMinimap(QWidget):
                 item.widget().deleteLater()
 
         max_occupied_page = max(page_counts.keys()) if page_counts else 0
-        max_occupied_spread = max_occupied_page // 2
+        max_occupied_spread = 0 if max_occupied_page == 0 else (max_occupied_page + 1) // 2
         total_spreads = max(6, current_spread + 2, max_occupied_spread + 2)
         denom = max(1, int(slots_per_page))
 
         active_pill = None
         for s_idx in range(total_spreads):
-            p1 = s_idx * 2
-            p2 = p1 + 1
-            r1 = page_counts.get(p1, 0) / denom
-            r2 = page_counts.get(p2, 0) / denom
+            if s_idx == 0:
+                r1 = 0.0
+                r2 = page_counts.get(0, 0) / denom
+            else:
+                p1 = s_idx * 2 - 1
+                p2 = p1 + 1
+                r1 = page_counts.get(p1, 0) / denom
+                r2 = page_counts.get(p2, 0) / denom
             pill = _SpreadMinimapPill(s_idx, r1, r2, is_active=(s_idx == current_spread))
             pill.clicked.connect(self.spread_selected.emit)
             self._pills_layout.addWidget(pill)

@@ -25,6 +25,20 @@ ENERGY_TYPES = [
     ("Colorless", "Incoloro", "#94a3b8", "#1e293b"),
 ]
 
+# Generaciones / Regiones Pokémon sincronizadas con Cartas.generacion
+GENERATION_FILTERS = [
+    (None, "Todas", "#64748b", "#ffffff"),
+    ("Kanto", "Kanto", "#dc2626", "#ffffff"),
+    ("Johto", "Johto", "#d97706", "#ffffff"),
+    ("Hoenn", "Hoenn", "#0284c7", "#ffffff"),
+    ("Sinnoh", "Sinnoh", "#7c3aed", "#ffffff"),
+    ("Teselia", "Teselia", "#0f766e", "#ffffff"),
+    ("Kalos", "Kalos", "#2563eb", "#ffffff"),
+    ("Alola", "Alola", "#ea580c", "#ffffff"),
+    ("Galar", "Galar", "#db2777", "#ffffff"),
+    ("Paldea", "Paldea", "#9333ea", "#ffffff"),
+]
+
 ZOOM_LEVELS = [
     ("Pequeño", "Compacto"),
     ("Normal", "Normal"),
@@ -34,20 +48,25 @@ ZOOM_LEVELS = [
 
 class EnergyTypeFilterBar(QFrame):
     """
-    Barra visual compacta y complementaria de filtros rápidos por Tipo de Energía Pokémon
+    Barra visual compacta y complementaria de filtros rápidos por Tipo de Energía o Generación Pokémon
+    + botón compacto para alternar entre modos de filtro rápido
     + control de escala/zoom de cuadrícula (Compacto / Normal / Grande).
     Se sincroniza bidireccionalmente con el QComboBox de Tipo existente sin reemplazarlo.
     """
-    type_selected = pyqtSignal(object)  # str | None
-    zoom_changed = pyqtSignal(str)      # "Pequeño" | "Normal" | "Grande"
+    type_selected = pyqtSignal(object)        # str | None
+    generation_selected = pyqtSignal(object)  # str | None
+    zoom_changed = pyqtSignal(str)            # "Pequeño" | "Normal" | "Grande"
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("EnergyTypeFilterBar")
         self.setFixedHeight(34)
+        self._mode = "energy"  # "energy" | "generation"
         self._active_type = None
+        self._active_generation = None
         self._active_zoom = load_settings().get("tamano_cartas", "Normal")
         self._type_buttons = {}
+        self._gen_buttons = {}
         self._zoom_buttons = {}
 
         self.setStyleSheet("""
@@ -59,8 +78,32 @@ class EnergyTypeFilterBar(QFrame):
         """)
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(8, 2, 8, 2)
-        layout.setSpacing(6)
+        layout.setContentsMargins(6, 2, 6, 2)
+        layout.setSpacing(5)
+
+        # Botón pequeño para alternar entre filtros rápidos (Energía <-> Generación)
+        self.btn_switch_mode = QPushButton("⇄")
+        self.btn_switch_mode.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_switch_mode.setFixedSize(22, 22)
+        self.btn_switch_mode.setToolTip(t("Cambiar filtro rápido (Energía / Generación)"))
+        self.btn_switch_mode.setStyleSheet("""
+            QPushButton {
+                background-color: #ffffff;
+                color: #5a2a3a;
+                font-size: 12px;
+                font-weight: 800;
+                border: 1.5px solid #f2b8c3;
+                border-radius: 6px;
+                padding: 0px;
+            }
+            QPushButton:hover {
+                background-color: #ffdfe6;
+                border-color: #f56b7b;
+                color: #c8324c;
+            }
+        """)
+        self.btn_switch_mode.clicked.connect(self.toggle_filter_mode)
+        layout.addWidget(self.btn_switch_mode)
 
         self.lbl_tipo = QLabel(t("Energía"))
         self.lbl_tipo.setStyleSheet(
@@ -68,30 +111,51 @@ class EnergyTypeFilterBar(QFrame):
         )
         layout.addWidget(self.lbl_tipo)
 
-        # Scroll horizontal de fichas de energía
+        # Scroll horizontal de fichas (energía o generación según modo)
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
-        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.scroll.setFixedHeight(26)
-        self.scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        self.scroll.setStyleSheet("""
+            QScrollArea {
+                background: transparent;
+                border: none;
+            }
+            QScrollBar:horizontal {
+                height: 0px;
+                background: transparent;
+            }
+        """)
 
         pills_container = QWidget()
         pills_container.setStyleSheet("background: transparent;")
         pills_layout = QHBoxLayout(pills_container)
         pills_layout.setContentsMargins(0, 0, 0, 0)
-        pills_layout.setSpacing(4)
+        pills_layout.setSpacing(3)
 
         for db_val, label_txt, hex_color, fg_color in ENERGY_TYPES:
             btn = QPushButton(t(label_txt))
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.setFixedHeight(22)
-            btn.setProperty("energy_val", db_val)
-            btn.setProperty("energy_color", hex_color)
-            btn.setProperty("energy_fg", fg_color)
+            btn.setProperty("filter_val", db_val)
+            btn.setProperty("filter_color", hex_color)
+            btn.setProperty("filter_fg", fg_color)
             btn.clicked.connect(lambda ch, v=db_val: self._on_pill_clicked(v))
             pills_layout.addWidget(btn)
             self._type_buttons[db_val] = btn
+
+        for gen_val, label_txt, hex_color, fg_color in GENERATION_FILTERS:
+            btn = QPushButton(t(label_txt))
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setFixedHeight(22)
+            btn.setProperty("filter_val", gen_val)
+            btn.setProperty("filter_color", hex_color)
+            btn.setProperty("filter_fg", fg_color)
+            btn.clicked.connect(lambda ch, v=gen_val: self._on_generation_pill_clicked(v))
+            btn.setVisible(False)
+            pills_layout.addWidget(btn)
+            self._gen_buttons[gen_val] = btn
 
         pills_layout.addStretch()
         self.scroll.setWidget(pills_container)
@@ -119,8 +183,35 @@ class EnergyTypeFilterBar(QFrame):
             layout.addWidget(zbtn)
             self._zoom_buttons[key] = zbtn
 
+        self._refresh_mode_ui()
         self._refresh_type_styles()
+        self._refresh_gen_styles()
         self._refresh_zoom_styles()
+
+    def toggle_filter_mode(self):
+        self._mode = "generation" if self._mode == "energy" else "energy"
+        self._refresh_mode_ui()
+
+    def set_filter_mode(self, mode: str):
+        if mode in ("energy", "generation") and self._mode != mode:
+            self._mode = mode
+            self._refresh_mode_ui()
+
+    def _refresh_mode_ui(self):
+        is_gen = self._mode == "generation"
+        if is_gen:
+            badge = f" ({self._active_type})" if self._active_type else ""
+            self.lbl_tipo.setText(t("Generación") + badge)
+            self.btn_switch_mode.setToolTip(t("Cambiar a filtro rápido de Energía"))
+        else:
+            badge = f" ({self._active_generation})" if self._active_generation else ""
+            self.lbl_tipo.setText(t("Energía") + badge)
+            self.btn_switch_mode.setToolTip(t("Cambiar a filtro rápido de Generación"))
+
+        for btn in self._type_buttons.values():
+            btn.setVisible(not is_gen)
+        for btn in self._gen_buttons.values():
+            btn.setVisible(is_gen)
 
     def _on_pill_clicked(self, db_val):
         if self._active_type == db_val and db_val is not None:
@@ -129,7 +220,17 @@ class EnergyTypeFilterBar(QFrame):
         else:
             self._active_type = db_val
         self._refresh_type_styles()
+        self._refresh_mode_ui()
         self.type_selected.emit(self._active_type)
+
+    def _on_generation_pill_clicked(self, gen_val):
+        if self._active_generation == gen_val and gen_val is not None:
+            self._active_generation = None
+        else:
+            self._active_generation = gen_val
+        self._refresh_gen_styles()
+        self._refresh_mode_ui()
+        self.generation_selected.emit(self._active_generation)
 
     def set_active_type(self, db_val):
         """Actualiza el estado visual sin emitir señal (para sincronizar desde el QComboBox)."""
@@ -140,6 +241,22 @@ class EnergyTypeFilterBar(QFrame):
         if self._active_type != db_val:
             self._active_type = db_val
             self._refresh_type_styles()
+            self._refresh_mode_ui()
+
+    def set_active_generation(self, gen_val):
+        if gen_val not in self._gen_buttons:
+            gen_val = None
+        if self._active_generation != gen_val:
+            self._active_generation = gen_val
+            self._refresh_gen_styles()
+            self._refresh_mode_ui()
+
+    def reset_filters(self):
+        self._active_type = None
+        self._active_generation = None
+        self._refresh_type_styles()
+        self._refresh_gen_styles()
+        self._refresh_mode_ui()
 
     def _on_zoom_clicked(self, size_key: str):
         if self._active_zoom == size_key:
@@ -153,11 +270,11 @@ class EnergyTypeFilterBar(QFrame):
             self._active_zoom = size_key
             self._refresh_zoom_styles()
 
-    def _refresh_type_styles(self):
-        for val, btn in self._type_buttons.items():
-            hex_c = btn.property("energy_color")
-            fg_c = btn.property("energy_fg")
-            is_active = (val == self._active_type)
+    def _apply_pill_styles(self, buttons_map: dict, active_val):
+        for val, btn in buttons_map.items():
+            hex_c = btn.property("filter_color")
+            fg_c = btn.property("filter_fg")
+            is_active = (val == active_val)
             if is_active:
                 btn.setStyleSheet(f"""
                     QPushButton {{
@@ -167,7 +284,7 @@ class EnergyTypeFilterBar(QFrame):
                         font-weight: 700;
                         border: 1.5px solid {hex_c};
                         border-radius: 9px;
-                        padding: 0px 9px;
+                        padding: 0px 7px;
                     }}
                 """)
             else:
@@ -179,13 +296,19 @@ class EnergyTypeFilterBar(QFrame):
                         font-weight: 600;
                         border: 1.5px solid {hex_c};
                         border-radius: 9px;
-                        padding: 0px 9px;
+                        padding: 0px 7px;
                     }}
                     QPushButton:hover {{
                         background-color: {hex_c};
                         color: {fg_c};
                     }}
                 """)
+
+    def _refresh_type_styles(self):
+        self._apply_pill_styles(self._type_buttons, self._active_type)
+
+    def _refresh_gen_styles(self):
+        self._apply_pill_styles(self._gen_buttons, self._active_generation)
 
     def _refresh_zoom_styles(self):
         for key, btn in self._zoom_buttons.items():

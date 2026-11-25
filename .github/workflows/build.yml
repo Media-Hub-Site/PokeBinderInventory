@@ -41,15 +41,33 @@ jobs:
 
       - name: Generate Release Tag Name
         id: tag_name
+        shell: pwsh
         run: |
           if ("${{ github.event_name }}" -eq "release") {
-            echo "TAG=${{ github.event.release.tag_name }}" >> $env:GITHUB_OUTPUT
+            $raw_tag = "${{ github.event.release.tag_name }}"
           } elseif ("${{ github.ref }}" -match "refs/tags/") {
-            echo "TAG=${{ github.ref_name }}" >> $env:GITHUB_OUTPUT
+            $raw_tag = "${{ github.ref_name }}"
           } else {
             $date = Get-Date -Format "yyyyMMdd-HHmm"
-            echo "TAG=v1.0.0-$date" >> $env:GITHUB_OUTPUT
+            $raw_tag = "v1.0.0-$date"
           }
+          $clean_ver = $raw_tag.TrimStart('v')
+          echo "TAG=$raw_tag" >> $env:GITHUB_OUTPUT
+          echo "CLEAN_VERSION=$clean_ver" >> $env:GITHUB_OUTPUT
+
+      - name: Update Inno Setup AppVersion
+        shell: pwsh
+        run: |
+          $ver = "${{ steps.tag_name.outputs.CLEAN_VERSION }}"
+          $issPath = (Resolve-Path "installer.iss").Path
+          $content = [System.IO.File]::ReadAllText($issPath) -replace '#define MyAppVersion ".*"', "#define MyAppVersion `"$ver`""
+          [System.IO.File]::WriteAllText($issPath, $content, (New-Object System.Text.UTF8Encoding $true))
+          Write-Host "Updated installer.iss AppVersion to $ver"
+
+      - name: Build Installer with Inno Setup
+        uses: Minionguyjpro/Inno-Setup-Action@v1.2.2
+        with:
+          path: installer.iss
 
       - name: Publish Release Asset
         uses: softprops/action-gh-release@v2
@@ -58,6 +76,7 @@ jobs:
           name: "PokeBinder ${{ steps.tag_name.outputs.TAG }}"
           files: |
             PokeBinder.zip
+            Output/PokeBinder-Setup.exe
           draft: false
           prerelease: false
         env:

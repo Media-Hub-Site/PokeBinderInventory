@@ -10,6 +10,9 @@ from MyQtApp.config import (
     BUNDLE_DIR, EXE_DIR, PERFIL_DIR, PROJECT_ROOT, USER_DATA_DIR,
     load_settings, scale_anim_duration
 )
+from MyQtApp.ui.AdvancedCoverStudio import (
+    normalize_advanced_design, render_advanced_elements, render_back_cover_surface
+)
 
 BINDER_COVERS_DIR = os.path.join(USER_DATA_DIR, "binder_covers")
 
@@ -197,6 +200,7 @@ class BinderCoverWidget(QWidget):
         mode: str = "3x3",
         custom_image: str = None,
         locked: bool = False,
+        advanced_design: dict = None,
         parent=None,
     ):
         super().__init__(parent)
@@ -207,6 +211,7 @@ class BinderCoverWidget(QWidget):
         self._custom_image = custom_image or None
         self._custom_pixmap = resolve_custom_cover_pixmap(self._custom_image)
         self._locked = bool(locked)
+        self._advanced_design = normalize_advanced_design(advanced_design)
         self._hovered = False
         self._hover_progress = 0.0
         self._hover_anim = None
@@ -221,6 +226,7 @@ class BinderCoverWidget(QWidget):
         mode: str = None,
         custom_image="UNSET",
         locked: bool = None,
+        advanced_design="UNSET",
     ):
         if name is not None:
             self._name = name or "Mi Binder"
@@ -235,6 +241,8 @@ class BinderCoverWidget(QWidget):
             self._custom_pixmap = resolve_custom_cover_pixmap(self._custom_image)
         if locked is not None:
             self._locked = bool(locked)
+        if advanced_design != "UNSET":
+            self._advanced_design = normalize_advanced_design(advanced_design)
         self.update()
 
     def set_hovered(self, hovered: bool):
@@ -474,6 +482,9 @@ class BinderCoverWidget(QWidget):
             painter.setBrush(QColor("#fbbf24"))
             painter.drawRoundedRect(QRectF(bx + 5.0, by + 9.5, 12.0, 8.5), 2, 2)
 
+        # 7c. Stickers y figuras de edición avanzada (Issue #52)
+        render_advanced_elements(painter, cover_rect, self._advanced_design.get("front"))
+
         painter.restore()
 
         # 8. Borde exterior refinado
@@ -585,3 +596,115 @@ class BinderCoverWidget(QWidget):
         font = QFont("Segoe UI", 9, QFont.Weight.Bold)
         painter.setFont(font)
         painter.drawText(inner, Qt.AlignmentFlag.AlignCenter, "POKEBINDER\nCOLLECTION")
+
+    def render_face_pixmap(
+        self,
+        face: str = "front",
+        width: int = 360,
+        height: int = 480,
+        back_color: str = None,
+        include_advanced: bool = True,
+        adv_override: dict = None,
+    ) -> QPixmap:
+        """Renderiza la cara delantera o trasera plana (para el Estudio Avanzado y Visor 3D)."""
+        pix = QPixmap(max(40, width), max(40, height))
+        pix.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pix)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+
+        adv = normalize_advanced_design(adv_override) if adv_override is not None else self._advanced_design
+        cfg, base, spine, strap, accent, accent2 = self._effective_colors()
+        rect = QRectF(0.0, 0.0, float(pix.width()), float(pix.height()))
+
+        if face == "back":
+            b_col = QColor(back_color or adv.get("back_color") or "")
+            if not b_col.isValid():
+                b_col = base
+            elements = adv.get("back") if include_advanced else []
+            render_back_cover_surface(
+                painter, rect, b_col, spine, strap,
+                item_type="binder", elements=elements, name=self._name,
+            )
+            painter.end()
+            return pix
+
+        # Cara delantera limpia ocupando todo el rectángulo (sin desplazamiento de estantería)
+        cover_path = QPainterPath()
+        cover_path.addRoundedRect(rect, 12, 12)
+        cover_grad = QLinearGradient(0, 0, rect.width(), rect.height())
+        cover_grad.setColorAt(0.0, base.lighter(118))
+        cover_grad.setColorAt(0.55, base)
+        cover_grad.setColorAt(1.0, base.darker(122))
+
+        painter.save()
+        painter.setClipPath(cover_path)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(cover_grad)
+        painter.drawRect(rect)
+
+        diag_path = QPainterPath()
+        diag_path.moveTo(rect.width() * 0.15, 0)
+        diag_path.lineTo(rect.width(), 0)
+        diag_path.lineTo(rect.width(), rect.height() * 0.58)
+        diag_path.lineTo(rect.width() * 0.15, rect.height() * 0.25)
+        diag_path.closeSubpath()
+        c_acc1 = QColor(accent); c_acc1.setAlpha(75)
+        c_acc2 = QColor(accent2); c_acc2.setAlpha(28)
+        ag = QLinearGradient(0, 0, rect.width(), rect.height() * 0.5)
+        ag.setColorAt(0.0, c_acc1); ag.setColorAt(1.0, c_acc2)
+        painter.setBrush(ag)
+        painter.drawPath(diag_path)
+
+        spine_w = max(16.0, rect.width() * 0.105)
+        strap_w = max(14.0, rect.width() * 0.09)
+        strap_x = rect.width() - strap_w - 14.0
+        art_x = spine_w + 10.0
+        art_w = (strap_x - 8.0) - art_x
+        art_y = 16.0
+        art_h = rect.height() * 0.62
+        art_center = QPointF(art_x + art_w / 2.0, art_y + art_h / 2.0)
+
+        kind = cfg.get("kind", "artwork")
+        if self._custom_pixmap and not self._custom_pixmap.isNull():
+            tr = QRectF(art_x, art_y, art_w, art_h)
+            sc = self._custom_pixmap.scaled(
+                int(max(16, tr.width())), int(max(16, tr.height())),
+                Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation,
+            )
+            painter.drawPixmap(QPointF(tr.center().x() - sc.width() / 2.0, tr.center().y() - sc.height() / 2.0), sc)
+        elif kind == "pokeball":
+            self._draw_pokeball_cover(painter, spine_w, 0, rect.width() - spine_w, rect.height(), art_center, min(art_w, art_h) * 0.44)
+        elif kind == "masterball":
+            self._draw_masterball_cover(painter, art_center, min(art_w, art_h) * 0.44)
+        elif kind == "minimal":
+            self._draw_minimal_cover(painter, QRectF(art_x + 4, art_y + 6, art_w - 8, art_h - 8), accent2)
+        else:
+            self._draw_artwork_cover(painter, cfg.get("artwork"), QRectF(art_x, art_y, art_w, art_h), art_center, accent, accent2)
+
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(spine)
+        painter.drawRect(QRectF(0, 0, spine_w, rect.height()))
+        painter.setBrush(strap)
+        painter.drawRect(QRectF(strap_x, 0, strap_w, rect.height()))
+
+        plate_h = 54.0
+        plate_rect = QRectF(spine_w + 8.0, rect.height() - plate_h - 12.0, strap_x - (spine_w + 16.0), plate_h)
+        painter.setBrush(QColor(15, 23, 42, 165))
+        painter.drawRoundedRect(plate_rect, 8, 8)
+        painter.setPen(QColor("#ffffff"))
+        painter.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
+        painter.drawText(plate_rect.adjusted(10, 6, -10, -22), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, self._name)
+        painter.setPen(QColor("#e2e8f0"))
+        painter.setFont(QFont("Segoe UI", 9, QFont.Weight.DemiBold))
+        painter.drawText(plate_rect.adjusted(10, 26, -10, -6), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, f"PRO-BINDER  |  {self._mode}")
+
+        if include_advanced:
+            render_advanced_elements(painter, rect, adv.get("front"))
+
+        painter.restore()
+        painter.setPen(QPen(QColor(255, 255, 255, 85), 1.5))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRoundedRect(rect, 12, 12)
+        painter.end()
+        return pix

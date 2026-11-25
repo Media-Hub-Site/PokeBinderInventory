@@ -121,10 +121,10 @@ class AppWindow(QWidget):
         if self.main_window.layout():
             self.main_window.layout().activate()
         hint = self.main_window.minimumSizeHint()
-        max_w = max(950, avail.width() - extra_w - 24)
-        max_h = max(600, avail.height() - extra_h - 16)
-        target_w = min(max(1180, hint.width()), max_w)
-        target_h = min(max(780, hint.height()), max_h)
+        max_w = max(1000, avail.width() - extra_w - 24)
+        max_h = max(650, avail.height() - extra_h - 16)
+        target_w = min(max(1240, hint.width()), max_w)
+        target_h = min(max(920, hint.height()), max_h)
 
         # Ejecutar la transición de flash blanco con redimensionamiento animado y centrado real
         self.ejecutar_transicion_flash(nuevo_indice=1, target_w=target_w, target_h=target_h)
@@ -193,7 +193,7 @@ class AppWindow(QWidget):
                     self.login_widget.load_profiles()
             else:
                 # Establecer límites del main window y re-centrar tras ajustar layout
-                self.setMinimumSize(950, 600)
+                self.setMinimumSize(1020, 620)
                 self.setMaximumSize(16777215, 16777215)
 
             self.center_on_screen()
@@ -234,6 +234,13 @@ def ensure_db_schema_up_to_date():
             cols_cartas = [row[1] for row in cur.fetchall()]
             if "variantes_disponibles" not in cols_cartas:
                 cur.execute("ALTER TABLE Cartas ADD COLUMN variantes_disponibles VARCHAR DEFAULT 'normal,reverse,holo'")
+            if "generacion" not in cols_cartas:
+                cur.execute("ALTER TABLE Cartas ADD COLUMN generacion VARCHAR")
+            if "pokedex_id" not in cols_cartas:
+                cur.execute("ALTER TABLE Cartas ADD COLUMN pokedex_id INTEGER")
+
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_cartas_generacion ON Cartas(generacion)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_cartas_pokedex_id ON Cartas(pokedex_id)")
 
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS carta_precios (
@@ -255,6 +262,9 @@ def ensure_db_schema_up_to_date():
             
             conn.commit()
             conn.close()
+
+            from MyQtApp.app.pokemon_generations import populate_generations_in_db
+            populate_generations_in_db(DB_PATH, force=False)
         except Exception as e:
             print(f"Error asegurando esquema DB: {e}")
 

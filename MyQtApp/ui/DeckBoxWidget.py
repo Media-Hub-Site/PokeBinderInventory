@@ -11,6 +11,9 @@ from MyQtApp.config import USER_DATA_DIR, load_settings, scale_anim_duration
 from MyQtApp.ui.BinderCoverWidget import (
     BINDER_DESIGNS, BINDER_COVERS_DIR, resolve_design_key, _load_theme_artwork as _load_artwork
 )
+from MyQtApp.ui.AdvancedCoverStudio import (
+    normalize_advanced_design, render_advanced_elements, render_back_cover_surface
+)
 from MyQtApp.ui.BinderBookAnimations import play_page_turn_sound
 
 
@@ -53,6 +56,7 @@ class DeckBoxWidget(QWidget):
         card_count: int = 0,
         locked: bool = False,
         custom_image: str = None,
+        advanced_design: dict = None,
         parent=None,
     ):
         super().__init__(parent)
@@ -63,13 +67,14 @@ class DeckBoxWidget(QWidget):
         self._locked = bool(locked)
         self._custom_image = custom_image or None
         self._custom_pixmap = resolve_custom_deck_pixmap(self._custom_image)
+        self._advanced_design = normalize_advanced_design(advanced_design)
         self._hovered = False
         self._hover_progress = 0.0
         self._hover_anim = None
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setMinimumSize(145, 185)
 
-    def set_deck_props(self, name=None, design=None, color=None, card_count=None, locked=None, custom_image="UNSET"):
+    def set_deck_props(self, name=None, design=None, color=None, card_count=None, locked=None, custom_image="UNSET", advanced_design="UNSET"):
         if name is not None:
             self._name = name or "Mi Mazo"
         if design is not None:
@@ -83,6 +88,8 @@ class DeckBoxWidget(QWidget):
         if custom_image != "UNSET":
             self._custom_image = custom_image or None
             self._custom_pixmap = resolve_custom_deck_pixmap(self._custom_image)
+        if advanced_design != "UNSET":
+            self._advanced_design = normalize_advanced_design(advanced_design)
         self.update()
 
     def set_hovered(self, hovered: bool):
@@ -352,6 +359,9 @@ class DeckBoxWidget(QWidget):
             painter.setBrush(QColor("#fbbf24"))
             painter.drawRoundedRect(QRectF(lock_x + 4.5, lock_y + 8.5, 11.0, 8.0), 2, 2)
 
+        # Stickers y figuras de edición avanzada (Issue #53)
+        render_advanced_elements(painter, body_rect, self._advanced_design.get("front"))
+
         painter.restore()
 
         # Borde nítido del cuerpo frontal
@@ -424,6 +434,131 @@ class DeckBoxWidget(QWidget):
             painter.setFont(QFont("Segoe UI", max(8, int(r * 0.38)), QFont.Weight.Black))
             painter.drawText(QRectF(center.x() - r * 0.5, center.y() - r * 0.88, r, r * 0.55), Qt.AlignmentFlag.AlignCenter, "M")
 
+    def render_face_pixmap(
+        self,
+        face: str = "front",
+        width: int = 360,
+        height: int = 440,
+        back_color: str = None,
+        include_advanced: bool = True,
+        adv_override: dict = None,
+    ) -> QPixmap:
+        """Renderiza la cara delantera o trasera plana del portamazos (para Estudio Avanzado y Visor 3D)."""
+        pix = QPixmap(max(40, width), max(40, height))
+        pix.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pix)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+
+        adv = normalize_advanced_design(adv_override) if adv_override is not None else self._advanced_design
+        cfg, base, spine, accent, accent2 = self._effective_colors()
+        rect = QRectF(0.0, 0.0, float(pix.width()), float(pix.height()))
+
+        if face == "back":
+            b_col = QColor(back_color or adv.get("back_color") or "")
+            if not b_col.isValid():
+                b_col = base
+            elements = adv.get("back") if include_advanced else []
+            render_back_cover_surface(
+                painter, rect, b_col, spine, spine,
+                item_type="deck", elements=elements, name=self._name,
+            )
+            painter.end()
+            return pix
+
+        body_path = QPainterPath()
+        body_path.addRoundedRect(rect, 12, 12)
+        body_grad = QLinearGradient(0, 0, rect.width(), rect.height())
+        body_grad.setColorAt(0.0, base.lighter(116))
+        body_grad.setColorAt(0.55, base)
+        body_grad.setColorAt(1.0, base.darker(122))
+
+        painter.save()
+        painter.setClipPath(body_path)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(body_grad)
+        painter.drawRect(rect)
+
+        accent_band = QPainterPath()
+        accent_band.moveTo(0, rect.height() * 0.60)
+        accent_band.lineTo(rect.width(), rect.height() * 0.42)
+        accent_band.lineTo(rect.width(), rect.height() * 0.52)
+        accent_band.lineTo(0, rect.height() * 0.70)
+        accent_band.closeSubpath()
+        painter.fillPath(accent_band, QColor(accent.red(), accent.green(), accent.blue(), 75))
+
+        flap_h = rect.height() * 0.34
+        art_rect = QRectF(16, flap_h * 0.72, rect.width() - 32, rect.height() * 0.44)
+        kind = cfg.get("kind", "artwork")
+        if self._custom_pixmap and not self._custom_pixmap.isNull():
+            sc = self._custom_pixmap.scaled(
+                int(max(16, art_rect.width())), int(max(16, art_rect.height())),
+                Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation,
+            )
+            painter.drawPixmap(QPointF(art_rect.center().x() - sc.width() / 2.0, art_rect.center().y() - sc.height() / 2.0), sc)
+        elif kind == "artwork":
+            art_pix = _load_artwork(cfg.get("artwork"))
+            if art_pix and not art_pix.isNull():
+                rad = min(art_rect.width(), art_rect.height()) * 0.48
+                med = QRadialGradient(art_rect.center(), rad)
+                med.setColorAt(0.0, QColor(accent2.red(), accent2.green(), accent2.blue(), 130))
+                med.setColorAt(1.0, QColor(accent.red(), accent.green(), accent.blue(), 0))
+                painter.setBrush(med)
+                painter.drawEllipse(art_rect.center(), rad, rad)
+                sc = art_pix.scaled(int(art_rect.width()), int(art_rect.height()), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                painter.drawPixmap(QPointF(art_rect.center().x() - sc.width() / 2.0, art_rect.center().y() - sc.height() / 2.0), sc)
+        elif kind == "pokeball":
+            self._draw_ball_emblem(painter, art_rect.center(), min(art_rect.width(), art_rect.height()) * 0.36, False)
+        elif kind == "masterball":
+            self._draw_ball_emblem(painter, art_rect.center(), min(art_rect.width(), art_rect.height()) * 0.36, True)
+        else:
+            painter.setPen(QPen(QColor(accent.red(), accent.green(), accent.blue(), 130), 1.4))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRoundedRect(art_rect.adjusted(8, 6, -8, -6), 6, 6)
+            painter.setPen(QColor(255, 255, 255, 170))
+            painter.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
+            painter.drawText(art_rect, Qt.AlignmentFlag.AlignCenter, "DECK BOX\nPRO")
+
+        # Tapa en V superior
+        flap_path = QPainterPath()
+        flap_path.moveTo(0, 0)
+        flap_path.lineTo(rect.width(), 0)
+        flap_path.lineTo(rect.width(), flap_h * 0.58)
+        flap_path.lineTo(rect.width() * 0.5, flap_h)
+        flap_path.lineTo(0, flap_h * 0.58)
+        flap_path.closeSubpath()
+        fg = QLinearGradient(0, 0, 0, flap_h)
+        fg.setColorAt(0.0, base.lighter(126))
+        fg.setColorAt(1.0, base.darker(108))
+        painter.setBrush(fg)
+        painter.setPen(QPen(spine.darker(135), 1.4))
+        painter.drawPath(flap_path)
+        painter.setBrush(accent)
+        painter.setPen(QPen(QColor(255, 255, 255, 190), 1.2))
+        painter.drawEllipse(QPointF(rect.width() * 0.5, flap_h - 11.0), 7.0, 7.0)
+
+        plate_h = 46.0
+        plate_rect = QRectF(12, rect.height() - plate_h - 10, rect.width() - 24, plate_h)
+        painter.setPen(QPen(QColor(255, 255, 255, 45), 1.0))
+        painter.setBrush(QColor(15, 15, 22, 195))
+        painter.drawRoundedRect(plate_rect, 7, 7)
+        painter.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
+        painter.setPen(QColor("#ffffff"))
+        painter.drawText(plate_rect.adjusted(10, 4, -10, -20), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, self._name)
+        painter.setFont(QFont("Segoe UI", 9, QFont.Weight.DemiBold))
+        painter.setPen(QColor("#4ade80") if self._card_count == 60 else QColor("#fbbf24"))
+        painter.drawText(plate_rect.adjusted(10, 22, -10, -4), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, f"DECK BOX  |  {self._card_count} / 60")
+
+        if include_advanced:
+            render_advanced_elements(painter, rect, adv.get("front"))
+
+        painter.restore()
+        painter.setPen(QPen(spine.darker(130), 1.5))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRoundedRect(rect, 12, 12)
+        painter.end()
+        return pix
+
 
 class DeckBoxOpenAnimationOverlay(QWidget):
     """
@@ -447,6 +582,7 @@ class DeckBoxOpenAnimationOverlay(QWidget):
         shelf_pixmap: QPixmap | None = None,
         editor_pixmap: QPixmap | None = None,
         custom_image: str | None = None,
+        advanced_design: dict | None = None,
     ):
         super().__init__(parent)
         self.setGeometry(parent.rect())
@@ -458,6 +594,7 @@ class DeckBoxOpenAnimationOverlay(QWidget):
             color=color,
             card_count=card_count,
             custom_image=custom_image,
+            advanced_design=advanced_design,
         )
         self.origin_rect = QRectF(origin_rect) if origin_rect else None
         self.reverse = bool(reverse)
@@ -467,6 +604,7 @@ class DeckBoxOpenAnimationOverlay(QWidget):
         self._progress = 1.0 if self.reverse else 0.0
         self._sfx = None
         self._sound_played = False
+        self._finished = False
 
         self.show()
         self.raise_()
@@ -481,6 +619,8 @@ class DeckBoxOpenAnimationOverlay(QWidget):
         self._anim.start()
 
     def _on_tick(self, val):
+        if self._finished:
+            return
         self._progress = float(val)
         if not self._sound_played:
             if (not self.reverse and self._progress >= 0.30) or (self.reverse and self._progress <= 0.72):
@@ -489,8 +629,33 @@ class DeckBoxOpenAnimationOverlay(QWidget):
         self.update()
 
     def _on_done(self):
-        self._deck_renderer.deleteLater()
+        if self._finished:
+            return
+        self._finished = True
+        if self._deck_renderer is not None:
+            self._deck_renderer.deleteLater()
+            self._deck_renderer = None
         self.animation_finished.emit()
+        self.hide()
+        self.deleteLater()
+
+    def cancel(self):
+        """Detiene la animación de inmediato sin emitir señales ni causar conflictos al cambiar de vista."""
+        if self._finished:
+            return
+        self._finished = True
+        try:
+            if self._anim is not None:
+                self._anim.blockSignals(True)
+                self._anim.stop()
+        except Exception:
+            pass
+        try:
+            if self._deck_renderer is not None:
+                self._deck_renderer.deleteLater()
+                self._deck_renderer = None
+        except Exception:
+            pass
         self.hide()
         self.deleteLater()
 

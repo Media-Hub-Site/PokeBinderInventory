@@ -26,6 +26,9 @@ from MyQtApp.ui.toast import show_toast
 from MyQtApp.ui.CardWidget import CardZoomOverlay
 from MyQtApp.ui.BinderCoverWidget import BINDER_DESIGNS, resolve_design_key
 from MyQtApp.ui.DeckBoxWidget import DeckBoxWidget, DeckBoxOpenAnimationOverlay, DECK_COVERS_DIR
+from MyQtApp.ui.AdvancedCoverStudio import (
+    AdvancedCoverStudioDialog, Interactive3DViewerDialog, normalize_advanced_design
+)
 from MyQtApp.ui.FilterVisualBar import EnergyTypeFilterBar
 
 
@@ -414,6 +417,7 @@ class DeckBoxCustomizeDialog(QDialog):
         color="auto",
         card_count=0,
         custom_image=None,
+        advanced_design=None,
         editing=False,
         parent=None,
     ):
@@ -424,6 +428,7 @@ class DeckBoxCustomizeDialog(QDialog):
         default_design = resolve_design_key(design or list(BINDER_DESIGNS.keys())[0])
         init_color = color or "auto"
         init_custom_image = custom_image or None
+        init_advanced = normalize_advanced_design(advanced_design)
         is_custom_initially = bool(
             editing and (init_custom_image or (init_color and str(init_color).lower() not in ("", "auto", "#ffeef2")))
         )
@@ -431,8 +436,9 @@ class DeckBoxCustomizeDialog(QDialog):
         self._state = {
             "custom_color": init_color if (init_color and str(init_color).lower() not in ("", "auto", "#ffeef2")) else "#1e1b26",
             "custom_image": init_custom_image,
+            "advanced_design": init_advanced,
         }
-        self._final_values = (name, default_design, init_color, init_custom_image)
+        self._final_values = (name, default_design, init_color, init_custom_image, init_advanced)
 
         self.setStyleSheet("""
             QDialog { background-color: #fff5f7; }
@@ -510,6 +516,7 @@ class DeckBoxCustomizeDialog(QDialog):
             color=init_color,
             card_count=card_count,
             custom_image=init_custom_image,
+            advanced_design=init_advanced,
             parent=preview_panel,
         )
         self.preview_box.setFixedSize(192, 240)
@@ -610,6 +617,19 @@ class DeckBoxCustomizeDialog(QDialog):
         form_col.addStretch()
 
         btns = QHBoxLayout()
+        btn_adv = QPushButton(t("Avanzado"))
+        btn_adv.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_adv.setFixedHeight(34)
+        btn_adv.setToolTip(t("Personalización avanzada con stickers, figuras, parte trasera y vista 3D"))
+        btn_adv.setStyleSheet("""
+            QPushButton {
+                background: #0ea5e9; color: #ffffff; border: 1.5px solid #0284c7;
+                border-radius: 9px; padding: 4px 16px; font-weight: 700;
+            }
+            QPushButton:hover { background: #0284c7; }
+        """)
+        btn_adv.clicked.connect(self._open_advanced_studio)
+        btns.addWidget(btn_adv)
         btns.addStretch()
         btn_cancel = QPushButton(t("Cancelar"))
         btn_cancel.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -688,6 +708,23 @@ class DeckBoxCustomizeDialog(QDialog):
         self._state["custom_image"] = None
         self._update_preview()
 
+    def _open_advanced_studio(self):
+        self._update_preview()
+        is_custom = self.tabs.currentIndex() == 1
+        studio = AdvancedCoverStudioDialog(
+            item_type="deck",
+            name=self.input_name.text().strip() or "Mi Mazo",
+            design_name=self.combo_design.currentData(),
+            custom_color=self._state["custom_color"],
+            custom_image=self._state["custom_image"] if is_custom else None,
+            advanced_design=self._state["advanced_design"],
+            face_renderer=self.preview_box.render_face_pixmap,
+            parent=self,
+        )
+        if studio.exec() == QDialog.DialogCode.Accepted:
+            self._state["advanced_design"] = studio.get_advanced_design()
+            self._update_preview()
+
     def _update_preview(self):
         is_custom = self.tabs.currentIndex() == 1
         cc = self._state["custom_color"]
@@ -710,6 +747,7 @@ class DeckBoxCustomizeDialog(QDialog):
                 design="Ultra PRO Minimalista",
                 color=cc,
                 custom_image=self._state["custom_image"],
+                advanced_design=self._state["advanced_design"],
             )
         else:
             self.preview_box.set_deck_props(
@@ -717,6 +755,7 @@ class DeckBoxCustomizeDialog(QDialog):
                 design=self.combo_design.currentData(),
                 color="auto",
                 custom_image=None,
+                advanced_design=self._state["advanced_design"],
             )
 
     def _validate_and_accept(self):
@@ -750,10 +789,10 @@ class DeckBoxCustomizeDialog(QDialog):
             else:
                 final_custom_image = src_path
 
-        self._final_values = (nombre, final_design, final_color, final_custom_image)
+        self._final_values = (nombre, final_design, final_color, final_custom_image, self._state["advanced_design"])
         self.accept()
 
-    def get_values(self) -> tuple[str, str, str, str | None]:
+    def get_values(self) -> tuple[str, str, str, str | None, dict]:
         return self._final_values
 
 
@@ -812,7 +851,13 @@ class MazosView(QWidget):
         default_design = _DEFAULT_DESIGN_KEYS[int(mazo_id) % len(_DEFAULT_DESIGN_KEYS)]
         return default_design, "auto", False, None
 
-    def _set_deck_style(self, mazo_id: int, design: str, color: str, locked: bool = None, custom_image="UNSET"):
+    def _get_deck_advanced_design(self, mazo_id: int) -> dict:
+        entry = self._deck_styles.get(str(mazo_id))
+        if isinstance(entry, dict):
+            return normalize_advanced_design(entry.get("advanced_design"))
+        return normalize_advanced_design(None)
+
+    def _set_deck_style(self, mazo_id: int, design: str, color: str, locked: bool = None, custom_image="UNSET", advanced_design="UNSET"):
         entry = self._deck_styles.setdefault(str(mazo_id), {})
         entry["design"] = resolve_design_key(design)
         entry["color"] = color or "auto"
@@ -820,6 +865,8 @@ class MazosView(QWidget):
             entry["locked"] = bool(locked)
         if custom_image != "UNSET":
             entry["custom_image"] = custom_image or None
+        if advanced_design != "UNSET":
+            entry["advanced_design"] = normalize_advanced_design(advanced_design)
         _save_deck_box_styles(self._deck_styles)
 
     def _is_deck_locked(self, mazo_id: int) -> bool:
@@ -1668,6 +1715,7 @@ class MazosView(QWidget):
             card_count=total_qty,
             locked=locked,
             custom_image=custom_image,
+            advanced_design=self._get_deck_advanced_design(mazo.id),
             parent=frame,
         )
         deck_box.setFixedSize(198, 224)
@@ -1711,23 +1759,58 @@ class MazosView(QWidget):
 
         vbox.addLayout(bottom_row)
 
+        long_press_timer = QTimer(frame)
+        long_press_timer.setSingleShot(True)
+        press_state = {"triggered": False}
+
+        def on_long_press():
+            press_state["triggered"] = True
+            self._abrir_vista_3d_mazo(mazo.id)
+
+        long_press_timer.timeout.connect(on_long_press)
+
         def on_enter(ev):
             deck_box.set_hovered(True)
             QFrame.enterEvent(frame, ev)
 
         def on_leave(ev):
+            long_press_timer.stop()
             deck_box.set_hovered(False)
             QFrame.leaveEvent(frame, ev)
 
-        def on_click(ev):
+        def on_press(ev):
             if ev.button() == Qt.MouseButton.LeftButton:
-                self.abrir_mazo(mazo.id, origin_widget=deck_box)
+                press_state["triggered"] = False
+                long_press_timer.start(450)
+
+        def on_release(ev):
+            if ev.button() == Qt.MouseButton.LeftButton:
+                was_long = press_state["triggered"]
+                long_press_timer.stop()
+                if not was_long and frame.rect().contains(ev.pos()):
+                    self.abrir_mazo(mazo.id, origin_widget=deck_box)
 
         frame.enterEvent = on_enter
         frame.leaveEvent = on_leave
-        frame.mousePressEvent = on_click
+        frame.mousePressEvent = on_press
+        frame.mouseReleaseEvent = on_release
+        frame.setToolTip(t("Clic para abrir  •  Mantén pulsado para ver en 3D"))
 
         return frame
+
+    def stop_active_animations(self):
+        """Detiene y limpia cualquier animación de apertura/cierre activa antes de cambiar de sección."""
+        ov = self._active_overlay
+        self._active_overlay = None
+        if ov is not None:
+            try:
+                if hasattr(ov, "cancel"):
+                    ov.cancel()
+                else:
+                    ov.hide()
+                    ov.deleteLater()
+            except Exception:
+                pass
 
     def mostrar_estanteria_mazos(self, animate_close=False):
         animaciones_activas = load_settings().get("animaciones", True)
@@ -1761,11 +1844,7 @@ class MazosView(QWidget):
 
                 shelf_pix = self.decks_home_widget.grab()
 
-                if self._active_overlay:
-                    try:
-                        self._active_overlay.deleteLater()
-                    except Exception:
-                        pass
+                self.stop_active_animations()
                 ov = DeckBoxOpenAnimationOverlay(
                     parent=self.main_stack,
                     name=closing_name,
@@ -1777,9 +1856,12 @@ class MazosView(QWidget):
                     shelf_pixmap=shelf_pix,
                     editor_pixmap=editor_pix,
                     custom_image=custom_image,
+                    advanced_design=self._get_deck_advanced_design(closing_id),
                 )
                 self._active_overlay = ov
-                ov.animation_finished.connect(lambda: setattr(self, "_active_overlay", None))
+                ov.animation_finished.connect(
+                    lambda target_ov=ov: setattr(self, "_active_overlay", None) if self._active_overlay is target_ov else None
+                )
                 return
             except Exception as e:
                 print(f"Error en animación de cierre de portamazos: {e}")
@@ -1814,6 +1896,7 @@ class MazosView(QWidget):
             card_count=total_qty,
             locked=locked,
             custom_image=custom_image,
+            advanced_design=self._get_deck_advanced_design(mazo.id),
         )
         self.btn_customize_deck.setEnabled(not locked)
         self.cargar_cartas_de_mazo(mazo)
@@ -1836,11 +1919,7 @@ class MazosView(QWidget):
             try:
                 editor_pix = self.deck_editor_widget.grab()
 
-                if self._active_overlay:
-                    try:
-                        self._active_overlay.deleteLater()
-                    except Exception:
-                        pass
+                self.stop_active_animations()
                 ov = DeckBoxOpenAnimationOverlay(
                     parent=self.main_stack,
                     name=mazo.nombre,
@@ -1852,20 +1931,23 @@ class MazosView(QWidget):
                     shelf_pixmap=shelf_pix,
                     editor_pixmap=editor_pix,
                     custom_image=custom_image,
+                    advanced_design=self._get_deck_advanced_design(mazo.id),
                 )
                 self._active_overlay = ov
-                ov.animation_finished.connect(lambda: setattr(self, "_active_overlay", None))
+                ov.animation_finished.connect(
+                    lambda target_ov=ov: setattr(self, "_active_overlay", None) if self._active_overlay is target_ov else None
+                )
             except Exception as e:
                 print(f"Error en animación de apertura de portamazos: {e}")
 
     def crear_nuevo_mazo(self):
         dlg = DeckBoxCustomizeDialog(title="Crear Nuevo Portamazos", editing=False, parent=self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            nombre, design, color, custom_image = dlg.get_values()
+            nombre, design, color, custom_image, adv_design = dlg.get_values()
             nuevo = Mazo(usuario_nombre=self.usuario, nombre=nombre)
             self.session.add(nuevo)
             self.session.commit()
-            self._set_deck_style(nuevo.id, design, color, locked=False, custom_image=custom_image)
+            self._set_deck_style(nuevo.id, design, color, locked=False, custom_image=custom_image, advanced_design=adv_design)
             self.cargar_mazos()
             show_toast(f"Portamazos '{nombre}' creado con éxito.", "success", 2500)
 
@@ -1877,6 +1959,7 @@ class MazosView(QWidget):
         if not mazo:
             return
         design, color, locked, custom_image = self._get_deck_style(mazo.id)
+        adv_design = self._get_deck_advanced_design(mazo.id)
         total_qty = sum(mc.cantidad for mc in mazo.cartas)
         dlg = DeckBoxCustomizeDialog(
             title="Personalizar Portamazos",
@@ -1885,14 +1968,15 @@ class MazosView(QWidget):
             color=color,
             card_count=total_qty,
             custom_image=custom_image,
+            advanced_design=adv_design,
             editing=True,
             parent=self,
         )
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            new_name, new_design, new_color, new_custom_image = dlg.get_values()
+            new_name, new_design, new_color, new_custom_image, new_adv = dlg.get_values()
             mazo.nombre = new_name
             self.session.commit()
-            self._set_deck_style(mazo.id, new_design, new_color, locked=locked, custom_image=new_custom_image)
+            self._set_deck_style(mazo.id, new_design, new_color, locked=locked, custom_image=new_custom_image, advanced_design=new_adv)
             if self.mazo_actual and self.mazo_actual.id == mazo.id:
                 self.lbl_mazo_nombre.setText(new_name)
                 self.editor_mini_box.set_deck_props(
@@ -1902,9 +1986,41 @@ class MazosView(QWidget):
                     card_count=total_qty,
                     locked=locked,
                     custom_image=new_custom_image,
+                    advanced_design=new_adv,
                 )
             self.cargar_mazos()
             show_toast("Portamazos actualizado.", "success", 2200)
+
+    def _abrir_vista_3d_mazo(self, mazo_id: int):
+        """Abre el Portamazos completo en el visor interactivo 3D (Issue #53)."""
+        mazo = self.session.query(Mazo).filter(Mazo.id == mazo_id).first()
+        if not mazo:
+            return
+        design, color, locked, custom_image = self._get_deck_style(mazo.id)
+        adv = self._get_deck_advanced_design(mazo.id)
+        total_qty = sum(mc.cantidad for mc in mazo.cartas)
+        temp_box = DeckBoxWidget(
+            name=mazo.nombre,
+            design=design,
+            color=color,
+            card_count=total_qty,
+            locked=locked,
+            custom_image=custom_image,
+            advanced_design=adv,
+        )
+        _cfg, _base, spine_col, _acc, _acc2 = temp_box._effective_colors()
+        front_pix = temp_box.render_face_pixmap("front", 360, 440, adv.get("back_color"), include_advanced=True)
+        back_pix = temp_box.render_face_pixmap("back", 360, 440, adv.get("back_color"), include_advanced=True)
+        dlg = Interactive3DViewerDialog(
+            title=mazo.nombre,
+            front_pixmap=front_pix,
+            back_pixmap=back_pix,
+            spine_color=spine_col.name(),
+            edge_color=spine_col.darker(115).name(),
+            item_type="deck",
+            parent=self,
+        )
+        dlg.exec()
 
     def personalizar_mazo_actual(self):
         if self.mazo_actual:
@@ -1963,6 +2079,11 @@ class MazosView(QWidget):
         act_edit.setEnabled(not is_locked)
         act_edit.triggered.connect(lambda: self.personalizar_mazo_por_id(mazo_id))
         menu.addAction(act_edit)
+
+        # 2b. Ver en 3D
+        act_3d = QAction(t("Ver en 3D"), menu)
+        act_3d.triggered.connect(lambda: self._abrir_vista_3d_mazo(mazo_id))
+        menu.addAction(act_3d)
 
         # 3. Duplicar
         act_dup = QAction(t("Duplicar"), menu)

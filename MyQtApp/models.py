@@ -32,6 +32,8 @@ class Cartas(Base):
     trainer = Column(String)
     edition = Column(String)
     variantes_disponibles = Column(String, default="normal,reverse,holo")
+    generacion = Column(String, nullable=True)
+    pokedex_id = Column(Integer, nullable=True)
 
     __table_args__ = (
         UniqueConstraint('id_api', 'idioma', name='uix_id_api_idioma'),

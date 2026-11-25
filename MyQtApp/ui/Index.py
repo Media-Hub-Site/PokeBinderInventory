@@ -4,8 +4,8 @@ from PyQt6.QtWidgets import (
     QMessageBox, QStackedWidget, QSpacerItem, QSizePolicy, QGraphicsOpacityEffect,
     QDialog, QComboBox
 )
-from PyQt6.QtCore import Qt, QUrl, QPropertyAnimation, QEasingCurve, QPoint, QByteArray, pyqtSignal
-from PyQt6.QtGui import QFont, QIcon, QPixmap
+from PyQt6.QtCore import Qt, QUrl, QPropertyAnimation, QVariantAnimation, QEasingCurve, QPoint, QByteArray, pyqtSignal
+from PyQt6.QtGui import QFont, QIcon, QPixmap, QPainter
 from PyQt6.QtMultimedia import QSoundEffect, QMediaPlayer, QAudioOutput
 import os
 
@@ -19,6 +19,68 @@ from .Binder import BinderView
 from .PrintView import PrintView
 from .Mazos import MazosView
 from MyQtApp.i18n import t, language_manager
+
+
+class _SectionCrossfadeOverlay(QWidget):
+    """
+    Overlay liviano de cross-fade entre secciones usando QPainter (sin QGraphicsOpacityEffect
+    sobre el subárbol de widgets), evitando conflictos con overlays 3D, QTableWidget y QScrollArea.
+    """
+    finished = pyqtSignal()
+
+    def __init__(self, parent: QWidget, old_pixmap: QPixmap, duration_ms: int = 170):
+        super().__init__(parent)
+        self.setGeometry(parent.rect())
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self._old_pixmap = old_pixmap
+        self._opacity = 1.0
+        self._done = False
+
+        self.show()
+        self.raise_()
+
+        self._anim = QVariantAnimation(self)
+        self._anim.setDuration(max(60, int(duration_ms)))
+        self._anim.setStartValue(1.0)
+        self._anim.setEndValue(0.0)
+        self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._anim.valueChanged.connect(self._on_tick)
+        self._anim.finished.connect(self._on_done)
+        self._anim.start()
+
+    def _on_tick(self, val):
+        if self._done:
+            return
+        self._opacity = max(0.0, min(1.0, float(val)))
+        self.update()
+
+    def _on_done(self):
+        if self._done:
+            return
+        self._done = True
+        self.finished.emit()
+        self.hide()
+        self.deleteLater()
+
+    def cancel(self):
+        if self._done:
+            return
+        self._done = True
+        try:
+            if self._anim is not None:
+                self._anim.blockSignals(True)
+                self._anim.stop()
+        except Exception:
+            pass
+        self.hide()
+        self.deleteLater()
+
+    def paintEvent(self, event):
+        if self._old_pixmap.isNull() or self._opacity <= 0.01:
+            return
+        painter = QPainter(self)
+        painter.setOpacity(self._opacity)
+        painter.drawPixmap(0, 0, self._old_pixmap)
 
 
 class BotonConSonido(QPushButton):
@@ -104,7 +166,7 @@ class MainWindow(QWidget):
         self.usuario = usuario
         self.setObjectName("MainBackground")
         self.setWindowTitle(f"{t('Menú Principal')} - {t('Usuario:')} {usuario.capitalize()}")
-        self.setGeometry(550, 250, 1000, 650)
+        self.setGeometry(550, 250, 1240, 920)
 
         main_layout = QHBoxLayout(self)
 
@@ -199,17 +261,21 @@ class MainWindow(QWidget):
         self.btn_view_grid = QPushButton("▦")
         self.btn_view_grid.setFixedSize(48, 48)
         self.btn_view_grid.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_view_grid.setToolTip("Vista en imágenes")
+        self.btn_view_grid.setToolTip(t("Vista en imágenes"))
+        self.btn_view_grid.setCheckable(True)
+        self.btn_view_grid.setChecked(True)
         self.btn_view_grid.setProperty("class", "ViewGrid")
 
         self.btn_view_list = QPushButton("≡")
         self.btn_view_list.setFixedSize(48, 48)
         self.btn_view_list.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_view_list.setToolTip("Vista en lista")
+        self.btn_view_list.setToolTip(t("Vista en lista"))
+        self.btn_view_list.setCheckable(True)
         self.btn_view_list.setProperty("class", "ViewList")
 
         vb_layout.addWidget(self.btn_view_grid)
         vb_layout.addWidget(self.btn_view_list)
+        self.view_buttons_container = view_buttons
 
         bottom_layout.addWidget(view_buttons, 0, Qt.AlignmentFlag.AlignLeft)
         bottom_layout.addItem(QSpacerItem(10, 10, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum))
@@ -241,6 +307,8 @@ class MainWindow(QWidget):
         self.btn_agregar.clicked.connect(self.agregar_cartas)
         self.btn_eliminar.clicked.connect(self.eliminar_cartas)
         self.btn_vaciar.clicked.connect(self.vaciar_binder)
+        self.btn_view_grid.clicked.connect(lambda: self._cambiar_vista_cartas("grid"))
+        self.btn_view_list.clicked.connect(lambda: self._cambiar_vista_cartas("list"))
 
         ajustes = self.paginas.widget(5)
         ajustes.music_volume_changed.connect(self.actualizar_volumen_musica)
@@ -341,51 +409,80 @@ class MainWindow(QWidget):
         except Exception as e:
             print(f"Error actualizando mazos: {e}")
 
+    def _cancel_section_transition(self):
+        ov = getattr(self, "_section_fade_overlay", None)
+        self._section_fade_overlay = None
+        if ov is not None:
+            try:
+                ov.cancel()
+            except Exception:
+                pass
+        self._current_animations = []
+
     def animar_transicion(self, nuevo_indice):
         indice_actual = self.paginas.currentIndex()
         if nuevo_indice == indice_actual:
             return
 
         widget_actual = self.paginas.currentWidget()
-        widget_nuevo = self.paginas.widget(nuevo_indice)
 
-        if not self.animaciones_activas:
-            # Sin animación: cambiar de página al instante
+        # Cancelar cualquier transición previa y detener animaciones internas activas (Binder / Mazos)
+        self._cancel_section_transition()
+        if widget_actual is not None and hasattr(widget_actual, "stop_active_animations"):
+            try:
+                widget_actual.stop_active_animations()
+            except Exception:
+                pass
+
+        if not self.animaciones_activas or not self.isVisible() or self.paginas.width() < 20 or self.paginas.height() < 20:
             self.paginas.setCurrentIndex(nuevo_indice)
             self.actualizar_botones_secundarios(nuevo_indice)
             return
 
-        # Transición moderna de fundido suave (Cross-fade)
+        # Capturar snapshot estático de la sección saliente para cross-fade sin QGraphicsEffect
+        old_pix = None
+        try:
+            old_pix = self.paginas.grab()
+        except Exception:
+            old_pix = None
+
         self.paginas.setCurrentIndex(nuevo_indice)
         self.actualizar_botones_secundarios(nuevo_indice)
 
-        eff = QGraphicsOpacityEffect(widget_nuevo)
-        widget_nuevo.setGraphicsEffect(eff)
-
-        anim = QPropertyAnimation(eff, b"opacity", self)
-        anim.setDuration(200)
-        anim.setStartValue(0.15)
-        anim.setEndValue(1.0)
-        anim.setEasingCurve(QEasingCurve.Type.OutCubic)
-
-        def cleanup():
-            widget_nuevo.setGraphicsEffect(None)
-            self._current_animations = []
-
-        anim.finished.connect(cleanup)
-        self._current_animations = [anim, eff]
-        anim.start()
+        if old_pix is not None and not old_pix.isNull():
+            ov = _SectionCrossfadeOverlay(self.paginas, old_pix, duration_ms=170)
+            self._section_fade_overlay = ov
+            ov.finished.connect(
+                lambda target_ov=ov: setattr(self, "_section_fade_overlay", None)
+                if getattr(self, "_section_fade_overlay", None) is target_ov else None
+            )
 
     def on_username_changed(self, new_username):
         self.usuario = new_username
         self.setWindowTitle(f"{t('Menú Principal')} - {t('Usuario:')} {new_username.capitalize()}")
 
     def cambiar_cuenta(self):
+        self._cancel_section_transition()
+        for i in range(self.paginas.count()):
+            w = self.paginas.widget(i)
+            if w is not None and hasattr(w, "stop_active_animations"):
+                try:
+                    w.stop_active_animations()
+                except Exception:
+                    pass
         if hasattr(self, 'player') and self.player:
             self.player.stop()
         self.logout_requested.emit()
 
     def closeEvent(self, event):
+        self._cancel_section_transition()
+        for i in range(self.paginas.count()):
+            w = self.paginas.widget(i)
+            if w is not None and hasattr(w, "stop_active_animations"):
+                try:
+                    w.stop_active_animations()
+                except Exception:
+                    pass
         if hasattr(self, 'player') and self.player:
             self.player.stop()
         top_level = self.window()
@@ -407,9 +504,29 @@ class MainWindow(QWidget):
         if self.paginas.currentIndex() == 1:
             self.btn_vaciar.setVisible(is_inside)
 
+    def _cambiar_vista_cartas(self, mode: str):
+        """Alterna entre vista en imágenes ('grid') y vista en lista ('list') en Buscar y Colecciones (Issue #58)."""
+        idx = self.paginas.currentIndex()
+        target = self.paginas.widget(idx) if idx in (0, 2) else None
+        if target is not None and hasattr(target, "set_view_mode"):
+            target.set_view_mode(mode)
+        self._sync_view_mode_buttons(idx)
+
+    def _sync_view_mode_buttons(self, indice: int):
+        show_view_btns = indice in (0, 2)
+        if hasattr(self, "view_buttons_container"):
+            self.view_buttons_container.setVisible(show_view_btns)
+        if not show_view_btns:
+            return
+        w = self.paginas.widget(indice)
+        mode = getattr(w, "_view_mode", "grid")
+        self.btn_view_grid.setChecked(mode == "grid")
+        self.btn_view_list.setChecked(mode == "list")
+
     def actualizar_botones_secundarios(self, indice):
         try:
             self._update_nav_active_state(indice)
+            self._sync_view_mode_buttons(indice)
             self.btn_agregar.setVisible(indice == 0)
             self.btn_eliminar.setVisible(indice == 2)
             

@@ -581,6 +581,7 @@ def _make_section_card(title: str, icon: str = "") -> tuple:
     """Crea una tarjeta de sección con título y devuelve (card_widget, inner_layout, title_lbl)."""
     card = QWidget()
     card.setObjectName("settings_card")
+    card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
     card.setStyleSheet("""
         QWidget#settings_card {
             background-color: rgba(255, 247, 248, 0.85);
@@ -589,7 +590,7 @@ def _make_section_card(title: str, icon: str = "") -> tuple:
         }
     """)
     card_layout = QVBoxLayout(card)
-    card_layout.setContentsMargins(18, 12, 18, 14)
+    card_layout.setContentsMargins(18, 14, 18, 18)
     card_layout.setSpacing(12)
 
     title_lbl = None
@@ -869,7 +870,7 @@ class PokeBinderInfoDialog(QDialog):
             "se guardan exclusivamente en tu propio computador (dentro de <i>%LOCALAPPDATA%\\PokeBinder</i>) "
             "y no se suben automáticamente a ningún servidor externo.<br><br>"
             "Si deseas llevar tu progreso a otro computador o guardarlo en Google Drive o un disco duro, "
-            "utiliza el botón <b>Exportar datos</b> en la parte inferior de Ajustes. Luego podrás recuperarlo "
+            "utiliza el botón <b>Exportar datos</b> en la sección <b>Base de Datos y Respaldos</b> de Ajustes. Luego podrás recuperarlo "
             "en cualquier sesión nueva mediante <b>Importar copia de seguridad</b>."
         )
 
@@ -957,6 +958,40 @@ class AjustesWidget(QWidget):
         title_row.addWidget(self.btn_info_app)
         root.addLayout(title_row)
 
+        # Contenedor desplazable para que cada sección mantenga siempre su margen inferior y no recorte botones/círculos
+        cards_scroll = QScrollArea()
+        cards_scroll.setWidgetResizable(True)
+        cards_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        cards_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        cards_scroll.setStyleSheet("""
+            QScrollArea {
+                background: transparent;
+                border: none;
+            }
+            QScrollBar:vertical {
+                background: transparent;
+                width: 8px;
+                margin: 2px 0px 2px 0px;
+            }
+            QScrollBar::handle:vertical {
+                background: rgba(242, 156, 164, 0.65);
+                border-radius: 4px;
+                min-height: 28px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background: rgba(226, 91, 112, 0.85);
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0px;
+            }
+        """)
+
+        cards_container = QWidget()
+        cards_container.setStyleSheet("background: transparent;")
+        cards_layout = QVBoxLayout(cards_container)
+        cards_layout.setContentsMargins(2, 2, 10, 8)
+        cards_layout.setSpacing(14)
+
         # ───── Sección 0: Perfil de Usuario ────────────────────────────────────
         if self.usuario:
             prof_card, prof_layout, self.lbl_sec_perfil = _make_section_card(t("Perfil de Usuario"), "👤")
@@ -1028,7 +1063,7 @@ class AjustesWidget(QWidget):
 
             prof_row.addLayout(info_layout)
             prof_card.layout().addLayout(prof_row)
-            root.addWidget(prof_card)
+            cards_layout.addWidget(prof_card)
         else:
             self.lbl_sec_perfil = None
 
@@ -1058,9 +1093,14 @@ class AjustesWidget(QWidget):
             QPushButton {
                 background-color: #fff0f3;
                 color: #b05060;
-                border: 2.5px solid #f29ca4;
+                border: 2px solid #f29ca4;
                 border-radius: 18px;
-                font-size: 12pt;
+                padding: 0px;
+                min-width: 36px;
+                max-width: 36px;
+                min-height: 36px;
+                max-height: 36px;
+                font-size: 11pt;
                 font-weight: bold;
             }
             QPushButton:hover {
@@ -1072,9 +1112,14 @@ class AjustesWidget(QWidget):
             QPushButton {
                 background-color: #e25b70;
                 color: white;
-                border: 2.5px solid #c94358;
+                border: 2px solid #c94358;
                 border-radius: 18px;
-                font-size: 12pt;
+                padding: 0px;
+                min-width: 36px;
+                max-width: 36px;
+                min-height: 36px;
+                max-height: 36px;
+                font-size: 11pt;
                 font-weight: bold;
             }
         """
@@ -1099,9 +1144,10 @@ class AjustesWidget(QWidget):
         self._circle_base_style = CIRCLE_BASE
         self._circle_active_style = CIRCLE_ACTIVE
         track_row.addStretch()
+        track_row.setContentsMargins(0, 2, 0, 4)
         audio_layout.addLayout(track_row)
 
-        root.addWidget(audio_card)
+        cards_layout.addWidget(audio_card)
 
         # ───── Sección 2: Apariencia ───────────────────────────────────────────
         ap_card, ap_layout, self.lbl_sec_apariencia = _make_section_card(t("Apariencia"), "🎨")
@@ -1133,7 +1179,7 @@ class AjustesWidget(QWidget):
         self.font_slider.setValue(self.settings["tamano_fuente"])
         ap_layout.addLayout(row_font)
 
-        root.addWidget(ap_card)
+        cards_layout.addWidget(ap_card)
 
         # ───── Sección 3: Sistema ──────────────────────────────────────────────
         sys_card, sys_layout, self.lbl_sec_sistema = _make_section_card(t("Sistema"), "🖥️")
@@ -1191,7 +1237,7 @@ class AjustesWidget(QWidget):
         row_lang, self.lbl_idioma = _make_setting_row(t("Idioma"), self.combo_lang)
         sys_layout.addLayout(row_lang)
 
-        root.addWidget(sys_card)
+        cards_layout.addWidget(sys_card)
 
         # ───── Sección 4: Base de Datos y Respaldos ───────────────────────────
         db_card, db_layout, self.lbl_sec_db = _make_section_card(t("Base de Datos y Respaldos"), "🗄️")
@@ -1199,26 +1245,28 @@ class AjustesWidget(QWidget):
         btn_backup_layout = QHBoxLayout()
         btn_backup_layout.setSpacing(12)
 
-        self.btn_create_backup = QPushButton(f"💾 {t('Crear Respaldo')}")
-        self.btn_create_backup.setProperty("class", "pill")
-        self.btn_create_backup.setFixedHeight(34)
-        self.btn_create_backup.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_create_backup.clicked.connect(self.crear_respaldo_manual)
+        self.btn_export_portable = QPushButton(f"📤 {t('Exportar datos')}")
+        self.btn_export_portable.setProperty("class", "pill")
+        self.btn_export_portable.setFixedHeight(36)
+        self.btn_export_portable.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_export_portable.clicked.connect(self.exportar_datos_portables)
 
-        self.btn_restore_backup = QPushButton(f"📂 {t('Restaurar Respaldo')}")
-        self.btn_restore_backup.setProperty("class", "pill")
-        self.btn_restore_backup.setFixedHeight(34)
-        self.btn_restore_backup.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_restore_backup.clicked.connect(self.restaurar_respaldo_manual)
+        self.btn_import_portable = QPushButton(f"📥 {t('Importar copia de seguridad')}")
+        self.btn_import_portable.setProperty("class", "pill")
+        self.btn_import_portable.setFixedHeight(36)
+        self.btn_import_portable.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_import_portable.clicked.connect(self.importar_copia_portable)
 
-        btn_backup_layout.addWidget(self.btn_create_backup)
-        btn_backup_layout.addWidget(self.btn_restore_backup)
+        btn_backup_layout.addWidget(self.btn_export_portable)
+        btn_backup_layout.addWidget(self.btn_import_portable)
         btn_backup_layout.addStretch()
 
         db_layout.addLayout(btn_backup_layout)
-        root.addWidget(db_card)
+        cards_layout.addWidget(db_card)
+        cards_layout.addStretch()
 
-        root.addStretch()
+        cards_scroll.setWidget(cards_container)
+        root.addWidget(cards_scroll, stretch=1)
 
         # ───── Footer: Acciones ────────────────────────────────────────────────
         footer = QHBoxLayout()
@@ -1233,18 +1281,14 @@ class AjustesWidget(QWidget):
         footer.addWidget(self.btn_logout)
         footer.addStretch()
 
-        self.btn_export_portable = QPushButton(t("Exportar datos"))
-        self.btn_import_portable = QPushButton(t("Importar copia de seguridad"))
         self.btn_rest = QPushButton(f"↩️ {t('Restaurar valores')}")
         self.btn_save = QPushButton(f"💾 {t('Guardar')}")
-        for b in (self.btn_export_portable, self.btn_import_portable, self.btn_rest, self.btn_save):
+        for b in (self.btn_rest, self.btn_save):
             b.setProperty("class", "pill")
             b.setFixedHeight(36)
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             footer.addWidget(b)
 
-        self.btn_export_portable.clicked.connect(self.exportar_datos_portables)
-        self.btn_import_portable.clicked.connect(self.importar_copia_portable)
         self.btn_rest.clicked.connect(self.restaurar_valores)
         self.btn_save.clicked.connect(self.guardar_valores)
 
@@ -1351,10 +1395,10 @@ class AjustesWidget(QWidget):
 
         if hasattr(self, 'lbl_sec_db') and self.lbl_sec_db:
             self.lbl_sec_db.setText(f"  🗄️  {t('Base de Datos y Respaldos')}")
-        if hasattr(self, 'btn_create_backup') and self.btn_create_backup:
-            self.btn_create_backup.setText(f"💾 {t('Crear Respaldo')}")
-        if hasattr(self, 'btn_restore_backup') and self.btn_restore_backup:
-            self.btn_restore_backup.setText(f"📂 {t('Restaurar Respaldo')}")
+        if hasattr(self, 'btn_export_portable') and self.btn_export_portable:
+            self.btn_export_portable.setText(f"📤 {t('Exportar datos')}")
+        if hasattr(self, 'btn_import_portable') and self.btn_import_portable:
+            self.btn_import_portable.setText(f"📥 {t('Importar copia de seguridad')}")
 
         es_oscuro = self.settings.get("tema_oscuro", False)
         self.btn_tema.setText(t("Tema Oscuro") if es_oscuro else t("Tema Claro"))

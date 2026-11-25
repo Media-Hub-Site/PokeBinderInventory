@@ -26,6 +26,7 @@ from MyQtApp.app.price_updater import (
 )
 from MyQtApp.session import SessionLocal
 from MyQtApp.models import Cartas
+from MyQtApp.ui.pixmap_cache import get_cached_pixmap, scale_cached_pixmap
 
 # Referencias fuertes a QThreads desacoplados en ejecución para evitar
 # "QThread: Destroyed while thread '' is still running" al cerrar diálogos/overlays
@@ -222,11 +223,15 @@ class VariantLegendBar(QWidget):
 
 
 class CardItemWidget(QWidget):
-    def __init__(self, carta, pixmap, size, variante="Normal", parent=None):
+    copy_qty_changed = pyqtSignal(str, int)
+
+    def __init__(self, carta, pixmap, size, variante="Normal", owned_qty=None, parent=None):
         super().__init__(parent)
         self.carta = carta
         self.id_api = getattr(carta, 'id_api', None)
         self.idioma = getattr(carta, 'idioma', None) or language_manager.current_language
+        self.card_key = f"{self.id_api}:{self.idioma}"
+        self._copy_qty = 1
         self.setFixedSize(size[0], size[1])
 
         layout = QVBoxLayout(self)
@@ -245,6 +250,29 @@ class CardItemWidget(QWidget):
         self.variant_badge.move(3, 3)
         self.variant_badge.raise_()
 
+        # Insignia de cantidad de copias poseídas (Colecciones - Issue #24)
+        self.owned_badge = None
+        if owned_qty is not None:
+            qty_val = max(1, int(owned_qty))
+            self.owned_badge = QLabel(f"x{qty_val}", self)
+            self.owned_badge.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+            self.owned_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.owned_badge.setStyleSheet("""
+                QLabel {
+                    background-color: rgba(15, 23, 42, 0.86);
+                    color: #ffffff;
+                    font-size: 10px;
+                    font-weight: 800;
+                    border: 1.5px solid #f7a8b8;
+                    border-radius: 8px;
+                    padding: 1px 6px;
+                }
+            """)
+            self.owned_badge.adjustSize()
+            ox = max(24, (size[0] - self.owned_badge.width()) // 2)
+            self.owned_badge.move(ox, 3)
+            self.owned_badge.raise_()
+
         # Botón de información (arriba a la derecha)
         self.info_btn = InfoIconLabel(carta, self)
         self.info_btn.move(size[0] - 26, 3)
@@ -262,15 +290,90 @@ class CardItemWidget(QWidget):
         self.rarity_badge.move(size[0] - self.rarity_badge.width() - 3, size[1] - self.rarity_badge.height() - 3)
         self.rarity_badge.raise_()
 
+        # Selector compacto de copias (- / qty / +) visible al seleccionar en Buscar (Issue #24)
+        self.copy_stepper = QFrame(self)
+        self.copy_stepper.setStyleSheet("""
+            QFrame {
+                background-color: rgba(15, 23, 42, 0.90);
+                border: 1.5px solid #00cccc;
+                border-radius: 9px;
+            }
+        """)
+        st_lay = QHBoxLayout(self.copy_stepper)
+        st_lay.setContentsMargins(3, 2, 3, 2)
+        st_lay.setSpacing(2)
+
+        btn_st_style = """
+            QPushButton {
+                background-color: #f56b7b;
+                color: #ffffff;
+                border: none;
+                border-radius: 5px;
+                font-size: 12px;
+                font-weight: 800;
+                padding: 0px;
+            }
+            QPushButton:hover {
+                background-color: #e11d48;
+            }
+        """
+        self.btn_copy_minus = QPushButton("-", self.copy_stepper)
+        self.btn_copy_minus.setFixedSize(20, 20)
+        self.btn_copy_minus.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_copy_minus.setStyleSheet(btn_st_style)
+        self.btn_copy_minus.clicked.connect(lambda: self._adjust_copy_qty(-1))
+
+        self.lbl_copy_qty = QLabel("1", self.copy_stepper)
+        self.lbl_copy_qty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_copy_qty.setMinimumWidth(20)
+        self.lbl_copy_qty.setStyleSheet(
+            "color: #ffffff; font-size: 11px; font-weight: 800; border: none; background: transparent;"
+        )
+
+        self.btn_copy_plus = QPushButton("+", self.copy_stepper)
+        self.btn_copy_plus.setFixedSize(20, 20)
+        self.btn_copy_plus.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_copy_plus.setStyleSheet(btn_st_style)
+        self.btn_copy_plus.clicked.connect(lambda: self._adjust_copy_qty(1))
+
+        st_lay.addWidget(self.btn_copy_minus)
+        st_lay.addWidget(self.lbl_copy_qty)
+        st_lay.addWidget(self.btn_copy_plus)
+        self.copy_stepper.adjustSize()
+        sx = max(2, (size[0] - self.copy_stepper.width()) // 2)
+        sy = max(24, size[1] - self.copy_stepper.height() - 24)
+        self.copy_stepper.move(sx, sy)
+        self.copy_stepper.hide()
+
+    def _adjust_copy_qty(self, delta: int):
+        new_qty = max(1, min(99, int(self._copy_qty) + int(delta)))
+        if new_qty == self._copy_qty:
+            return
+        self._copy_qty = new_qty
+        self.lbl_copy_qty.setText(str(new_qty))
+        self.copy_qty_changed.emit(self.card_key, new_qty)
+
+    def set_selection_stepper(self, visible: bool, qty: int = 1):
+        """Muestra u oculta el selector de copias (- / qty / +) según el estado seleccionado."""
+        self._copy_qty = max(1, min(99, int(qty or 1)))
+        self.lbl_copy_qty.setText(str(self._copy_qty))
+        self.copy_stepper.setVisible(bool(visible))
+        if visible:
+            self.copy_stepper.raise_()
+
     def set_card_pixmap(self, pixmap: QPixmap):
         """Actualiza la imagen de la carta en vivo (usado tras descarga asíncrona .webp)."""
         if pixmap and not pixmap.isNull():
             self.image_label.setPixmap(pixmap)
             self.variant_badge.raise_()
+            if self.owned_badge is not None:
+                self.owned_badge.raise_()
             self.info_btn.raise_()
             self.lang_badge.raise_()
             if hasattr(self, "rarity_badge") and self.rarity_badge:
                 self.rarity_badge.raise_()
+            if not self.copy_stepper.isHidden():
+                self.copy_stepper.raise_()
 
 
 
@@ -312,8 +415,8 @@ class InteractiveCard3DWidget(QWidget):
         ]
         for path in candidate_paths:
             if os.path.exists(path):
-                pix = QPixmap(path)
-                if not pix.isNull():
+                pix = get_cached_pixmap(path)
+                if pix and not pix.isNull():
                     self._back_pixmap = pix
                     return
 
@@ -472,7 +575,7 @@ class InteractiveCard3DWidget(QWidget):
 
         painter.save()
         painter.setClipPath(clip_path)
-        scaled_pix = pix.scaled(int(cw), int(ch), Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        scaled_pix = scale_cached_pixmap(pix, int(cw), int(ch), keep_aspect=False, smooth=True)
         painter.drawPixmap(int(cx), int(cy), scaled_pix)
         painter.restore()
 
@@ -1348,12 +1451,8 @@ class InfoIconLabel(QLabel):
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
         info_icon_path = os.path.join(ICONS_DIR, "info.png")
-        if os.path.exists(info_icon_path):
-            pix = QPixmap(info_icon_path).scaled(
-                16, 16,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation
-            )
+        pix = get_cached_pixmap(info_icon_path, 16, 16, keep_aspect=True, smooth=True)
+        if pix and not pix.isNull():
             self.setPixmap(pix)
             self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         else:

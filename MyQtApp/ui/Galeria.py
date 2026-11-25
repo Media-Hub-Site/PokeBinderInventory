@@ -1,7 +1,8 @@
 from PyQt6.QtWidgets import (
     QWidget, QLabel, QVBoxLayout, QScrollArea, QGridLayout,
     QHBoxLayout, QLineEdit, QComboBox, QPushButton, QGraphicsOpacityEffect,
-    QSizePolicy, QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView
+    QSizePolicy, QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
+    QSpinBox
 )
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QPropertyAnimation, QUrl, QEasingCurve
@@ -33,6 +34,7 @@ class GaleriaCartas(QWidget):
         self.card_widgets_por_key = {}
         self._current_card_size = (120, 170)
         self.cartas_seleccionadas = set()
+        self.cantidades_seleccionadas = {}
         self.current_page = 0
         self.total_cartas = 0
         self._active_generation = None
@@ -141,10 +143,10 @@ class GaleriaCartas(QWidget):
 
         # Vista de Lista tipo Excel con columnas ajustables (Issue #58)
         self.list_table = QTableWidget()
-        self.list_table.setColumnCount(9)
+        self.list_table.setColumnCount(10)
         self.list_table.setHorizontalHeaderLabels([
             t("#Dex"), t("Nombre"), t("Tipo"), t("Generación"),
-            t("Rareza"), t("Edición"), t("Etapa"), t("Idioma"), t("Precio (USD)")
+            t("Rareza"), t("Edición"), t("Etapa"), t("Idioma"), t("Precio (USD)"), t("Copias")
         ])
         self.list_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.list_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -155,13 +157,14 @@ class GaleriaCartas(QWidget):
         self.list_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self.list_table.horizontalHeader().setStretchLastSection(True)
         self.list_table.setColumnWidth(0, 58)
-        self.list_table.setColumnWidth(1, 210)
-        self.list_table.setColumnWidth(2, 90)
+        self.list_table.setColumnWidth(1, 200)
+        self.list_table.setColumnWidth(2, 85)
         self.list_table.setColumnWidth(3, 95)
-        self.list_table.setColumnWidth(4, 130)
-        self.list_table.setColumnWidth(5, 160)
-        self.list_table.setColumnWidth(6, 90)
-        self.list_table.setColumnWidth(7, 65)
+        self.list_table.setColumnWidth(4, 120)
+        self.list_table.setColumnWidth(5, 145)
+        self.list_table.setColumnWidth(6, 85)
+        self.list_table.setColumnWidth(7, 60)
+        self.list_table.setColumnWidth(8, 90)
         self.list_table.setStyleSheet("""
             QTableWidget {
                 background-color: #ffffff;
@@ -363,11 +366,15 @@ class GaleriaCartas(QWidget):
             card_widget = CardItemWidget(carta, pix, size)
             card_widget.image_label.card_key = card_key
             card_widget.image_label.clicked.connect(self.seleccionar_carta)
+            card_widget.copy_qty_changed.connect(self._on_card_copy_qty_changed)
 
             if card_key in self.cartas_seleccionadas:
                 card_widget.image_label.setStyleSheet("border: 2.5px solid #00cccc; border-radius: 6px; background-color: rgba(0, 255, 200, 0.25);")
+                qty = self.cantidades_seleccionadas.setdefault(card_key, 1)
+                card_widget.set_selection_stepper(True, qty)
             else:
                 card_widget.image_label.setStyleSheet("border: none; background-color: transparent;")
+                card_widget.set_selection_stepper(False, 1)
 
             self.labels_por_id.setdefault(card_key, []).append(card_widget.image_label)
             self.card_widgets_por_key.setdefault(card_key, []).append(card_widget)
@@ -449,7 +456,17 @@ class GaleriaCartas(QWidget):
                 if c_idx in (0, 7, 8):
                     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.list_table.setItem(r_idx, c_idx, item)
-            if card_key in self.cartas_seleccionadas:
+
+            is_sel = card_key in self.cartas_seleccionadas
+            spin = QSpinBox(self.list_table)
+            spin.setRange(1, 99)
+            spin.setValue(self.cantidades_seleccionadas.get(card_key, 1) if is_sel else 1)
+            spin.setEnabled(is_sel)
+            spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            spin.valueChanged.connect(lambda val, ck=card_key: self._on_card_copy_qty_changed(ck, val))
+            self.list_table.setCellWidget(r_idx, 9, spin)
+
+            if is_sel:
                 self.list_table.selectRow(r_idx)
         self.list_table.blockSignals(False)
 
@@ -467,6 +484,23 @@ class GaleriaCartas(QWidget):
         }
         self.cartas_seleccionadas -= page_keys
         self.cartas_seleccionadas |= selected_page_keys
+        for k in page_keys - selected_page_keys:
+            self.cantidades_seleccionadas.pop(k, None)
+        for k in selected_page_keys:
+            self.cantidades_seleccionadas.setdefault(k, 1)
+        for r in range(self.list_table.rowCount()):
+            it = self.list_table.item(r, 0)
+            spin = self.list_table.cellWidget(r, 9)
+            if it and spin is not None:
+                ck = it.data(Qt.ItemDataRole.UserRole)
+                active = ck in self.cartas_seleccionadas
+                spin.blockSignals(True)
+                spin.setEnabled(active)
+                if not active:
+                    spin.setValue(1)
+                else:
+                    spin.setValue(self.cantidades_seleccionadas.get(ck, 1))
+                spin.blockSignals(False)
 
     def _on_list_double_clicked(self, row: int, _col: int):
         item = self.list_table.item(row, 0)
@@ -551,14 +585,34 @@ class GaleriaCartas(QWidget):
             self.sonido_pagina.setVolume(vol)
             self.sonido_pagina.play()
 
+    def _on_card_copy_qty_changed(self, card_key: str, qty: int):
+        qty_clean = max(1, min(99, int(qty or 1)))
+        self.cantidades_seleccionadas[card_key] = qty_clean
+        for cw in self.card_widgets_por_key.get(card_key, []):
+            try:
+                cw.set_selection_stepper(card_key in self.cartas_seleccionadas, qty_clean)
+            except RuntimeError:
+                pass
+
+    def _sync_steppers_for_key(self, card_key: str):
+        is_sel = card_key in self.cartas_seleccionadas
+        qty = self.cantidades_seleccionadas.get(card_key, 1) if is_sel else 1
+        for cw in self.card_widgets_por_key.get(card_key, []):
+            try:
+                cw.set_selection_stepper(is_sel, qty)
+            except RuntimeError:
+                pass
+
     def seleccionar_carta(self, label_obj, id_carta):
         card_key = getattr(label_obj, 'card_key', None) or id_carta
 
         if card_key in self.cartas_seleccionadas:
             self.cartas_seleccionadas.remove(card_key)
+            self.cantidades_seleccionadas.pop(card_key, None)
             style = "border: none; background-color: transparent;"
         else:
             self.cartas_seleccionadas.add(card_key)
+            self.cantidades_seleccionadas.setdefault(card_key, 1)
             style = "border: 2.5px solid #00cccc; border-radius: 6px; background-color: rgba(0, 255, 200, 0.25);"
 
         labels = self.labels_por_id.get(card_key, [])
@@ -569,6 +623,7 @@ class GaleriaCartas(QWidget):
                 lbl.setStyleSheet(style)
         elif label_obj:
             label_obj.setStyleSheet(style)
+        self._sync_steppers_for_key(card_key)
 
     def toggle_seleccionar_pagina(self):
         """Selecciona o deselecciona todas las cartas actualmente desplegadas en la página."""
@@ -584,10 +639,24 @@ class GaleriaCartas(QWidget):
             self.list_table.blockSignals(True)
             if all_selected:
                 self.cartas_seleccionadas -= page_keys
+                for key in page_keys:
+                    self.cantidades_seleccionadas.pop(key, None)
                 self.list_table.clearSelection()
             else:
                 self.cartas_seleccionadas |= page_keys
+                for key in page_keys:
+                    self.cantidades_seleccionadas.setdefault(key, 1)
                 self.list_table.selectAll()
+            for r in range(self.list_table.rowCount()):
+                it = self.list_table.item(r, 0)
+                spin = self.list_table.cellWidget(r, 9)
+                if it and spin is not None:
+                    ck = it.data(Qt.ItemDataRole.UserRole)
+                    active = ck in self.cartas_seleccionadas
+                    spin.blockSignals(True)
+                    spin.setEnabled(active)
+                    spin.setValue(self.cantidades_seleccionadas.get(ck, 1) if active else 1)
+                    spin.blockSignals(False)
             self.list_table.blockSignals(False)
             return
 
@@ -602,14 +671,18 @@ class GaleriaCartas(QWidget):
             # Deseleccionar todas las cartas de esta página
             for key in page_keys:
                 self.cartas_seleccionadas.discard(key)
+                self.cantidades_seleccionadas.pop(key, None)
                 for lbl in self.labels_por_id.get(key, []):
                     lbl.setStyleSheet("border: none; background-color: transparent;")
+                self._sync_steppers_for_key(key)
         else:
             # Seleccionar todas las cartas de esta página
             for key in page_keys:
                 self.cartas_seleccionadas.add(key)
+                self.cantidades_seleccionadas.setdefault(key, 1)
                 for lbl in self.labels_por_id.get(key, []):
                     lbl.setStyleSheet("border: 2.5px solid #00cccc; border-radius: 6px; background-color: rgba(0, 255, 200, 0.25);")
+                self._sync_steppers_for_key(key)
 
     def get_cartas_seleccionadas(self):
         if not self.cartas_seleccionadas:
@@ -629,15 +702,24 @@ class GaleriaCartas(QWidget):
                     .filter(Cartas.id_api == id_api).first()
 
             if c:
-                resultado.append({"id_api": c[0], "nombre": c[1], "idioma": c[2]})
+                qty = max(1, int(self.cantidades_seleccionadas.get(key, 1) or 1))
+                resultado.append({"id_api": c[0], "nombre": c[1], "idioma": c[2], "cantidad": qty})
 
         return resultado
 
     def limpiar_seleccion(self):
         self.cartas_seleccionadas.clear()
+        self.cantidades_seleccionadas.clear()
         if hasattr(self, "list_table"):
             self.list_table.blockSignals(True)
             self.list_table.clearSelection()
+            for r in range(self.list_table.rowCount()):
+                spin = self.list_table.cellWidget(r, 9)
+                if spin is not None:
+                    spin.blockSignals(True)
+                    spin.setEnabled(False)
+                    spin.setValue(1)
+                    spin.blockSignals(False)
             self.list_table.blockSignals(False)
         for key, labels in self.labels_por_id.items():
             if isinstance(labels, list):
@@ -645,6 +727,7 @@ class GaleriaCartas(QWidget):
                     lbl.setStyleSheet("border: none; background-color: transparent;")
             elif labels:
                 labels.setStyleSheet("border: none; background-color: transparent;")
+            self._sync_steppers_for_key(key)
 
     def iniciar_sincronizacion_precios(self):
         from MyQtApp.app.price_updater import PriceUpdaterThread

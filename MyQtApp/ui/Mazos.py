@@ -24,6 +24,7 @@ from MyQtApp.app.db_services import obtener_categorias_usuario
 from MyQtApp.i18n import t, language_manager
 from MyQtApp.ui.toast import show_toast
 from MyQtApp.ui.CardWidget import CardZoomOverlay
+from MyQtApp.ui.pixmap_cache import get_cached_pixmap, scale_cached_pixmap
 from MyQtApp.ui.BinderCoverWidget import BINDER_DESIGNS, resolve_design_key
 from MyQtApp.ui.DeckBoxWidget import DeckBoxWidget, DeckBoxOpenAnimationOverlay, DECK_COVERS_DIR
 from MyQtApp.ui.AdvancedCoverStudio import (
@@ -365,7 +366,7 @@ class DraggableCollectionCardWidget(QFrame):
         if pixmap and not pixmap.isNull():
             cw, ch = self.card_size
             self.lbl_img.setPixmap(
-                pixmap.scaled(cw, ch, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                scale_cached_pixmap(pixmap, cw, ch, keep_aspect=True, smooth=True)
             )
             self.lbl_in_deck.raise_()
             self.btn_add.raise_()
@@ -400,7 +401,7 @@ class DraggableCollectionCardWidget(QFrame):
             drag.setMimeData(mime)
             pix = self.lbl_img.pixmap()
             if pix and not pix.isNull():
-                scaled = pix.scaled(76, 106, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                scaled = scale_cached_pixmap(pix, 76, 106, keep_aspect=True, smooth=True)
                 drag.setPixmap(scaled)
                 drag.setHotSpot(QPoint(scaled.width() // 2, scaled.height() // 2))
             drag.exec(Qt.DropAction.CopyAction)
@@ -1279,6 +1280,8 @@ class MazosView(QWidget):
             (t("Rareza"), "rarity"),
             (t("Energía"), "type"),
             (t("Idioma"), "idioma"),
+            ("Pokedex", "pokedex"),
+            ("Cantidad", "cantidad"),
         ]
         for label, key in opciones:
             act = QAction(label, menu)
@@ -1455,13 +1458,17 @@ class MazosView(QWidget):
         if self.col_coleccion_activa:
             q = q.filter(UsuarioCarta.categoria == self.col_coleccion_activa)
 
-        # Aplicar orden activo (Rareza, Energía, Idioma) o por defecto (Nombre)
+        # Aplicar orden activo (Rareza, Energía, Idioma, Pokedex, Cantidad) o por defecto (Nombre)
         if self.col_orden_activo == "rarity":
             q = q.order_by(Cartas.rarity.asc(), Cartas.nombre.asc())
         elif self.col_orden_activo == "type":
             q = q.order_by(Cartas.type.asc(), Cartas.nombre.asc())
         elif self.col_orden_activo == "idioma":
             q = q.order_by(Cartas.idioma.asc(), Cartas.nombre.asc())
+        elif self.col_orden_activo == "pokedex":
+            q = q.order_by(Cartas.pokedex_id.is_(None), Cartas.pokedex_id.asc(), Cartas.nombre.asc())
+        elif self.col_orden_activo == "cantidad":
+            q = q.order_by(UsuarioCarta.cantidad.desc(), Cartas.nombre.asc())
         else:
             q = q.order_by(Cartas.nombre.asc())
 
@@ -1532,8 +1539,8 @@ class MazosView(QWidget):
         widgets = self.col_widgets_by_key.get(card_key)
         if not widgets or not os.path.exists(local_path):
             return
-        pix = QPixmap(local_path)
-        if pix.isNull():
+        pix = get_cached_pixmap(local_path)
+        if not pix or pix.isNull():
             return
         for w in list(widgets):
             try:

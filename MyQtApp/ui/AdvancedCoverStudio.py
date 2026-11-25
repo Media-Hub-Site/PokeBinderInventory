@@ -68,18 +68,44 @@ _sticker_pixmap_cache: dict[str, QPixmap | None] = {}
 
 def normalize_advanced_design(raw: dict | None) -> dict:
     if not isinstance(raw, dict):
-        return {"front": [], "back": [], "back_color": None}
+        return {
+            "front": [],
+            "back": [],
+            "inside": [],
+            "back_color": None,
+            "inside_color": None,
+            "inside_show_pocket": True,
+            "inside_show_title": True,
+            "inside_title": None,
+            "inside_subtitle": None,
+        }
     return {
         "front": [copy.deepcopy(el) for el in raw.get("front", []) if isinstance(el, dict)],
         "back": [copy.deepcopy(el) for el in raw.get("back", []) if isinstance(el, dict)],
+        "inside": [copy.deepcopy(el) for el in raw.get("inside", []) if isinstance(el, dict)],
         "back_color": raw.get("back_color") or None,
+        "inside_color": raw.get("inside_color") or None,
+        "inside_show_pocket": bool(raw.get("inside_show_pocket", True)),
+        "inside_show_title": bool(raw.get("inside_show_title", True)),
+        "inside_title": raw.get("inside_title") if raw.get("inside_title") is not None else None,
+        "inside_subtitle": raw.get("inside_subtitle") if raw.get("inside_subtitle") is not None else None,
     }
 
 
 def has_advanced_elements(raw: dict | None) -> bool:
     if not isinstance(raw, dict):
         return False
-    return bool(raw.get("front") or raw.get("back") or raw.get("back_color"))
+    return bool(
+        raw.get("front")
+        or raw.get("back")
+        or raw.get("inside")
+        or raw.get("back_color")
+        or raw.get("inside_color")
+        or raw.get("inside_title")
+        or raw.get("inside_subtitle")
+        or raw.get("inside_show_pocket") is False
+        or raw.get("inside_show_title") is False
+    )
 
 
 def resolve_sticker_pixmap(path_or_name: str | None) -> QPixmap | None:
@@ -395,6 +421,85 @@ def render_back_cover_surface(
     painter.setPen(QPen(QColor(255, 255, 255, 85), 1.5))
     painter.setBrush(Qt.BrushStyle.NoBrush)
     painter.drawRoundedRect(rect, 12, 12)
+
+
+def render_inside_cover_surface(
+    painter: QPainter,
+    rect: QRectF,
+    interior_color: str | None,
+    folder_name: str = "Mi Binder",
+    advanced_design: dict | None = None,
+    include_advanced: bool = True,
+):
+    """Dibuja la cara interior de portada del Binder con su bolsillo, emblema y stickers avanzados."""
+    adv = normalize_advanced_design(advanced_design)
+    effective_color = adv.get("inside_color") or interior_color or "#18181e"
+
+    base_col = QColor(effective_color)
+    if not base_col.isValid():
+        base_col = QColor(24, 24, 30)
+
+    luma = 0.299 * base_col.red() + 0.587 * base_col.green() + 0.114 * base_col.blue()
+    text_col = QColor(45, 30, 40, 175) if luma > 155 else QColor(255, 255, 255, 165)
+    seam_col = QColor(20, 20, 30, 55) if luma > 155 else QColor(255, 255, 255, 38)
+
+    grad = QLinearGradient(rect.left(), rect.top(), rect.right(), rect.bottom())
+    grad.setColorAt(0.0, base_col.darker(118))
+    grad.setColorAt(0.6, base_col.darker(108))
+    grad.setColorAt(1.0, base_col.darker(126))
+    painter.setBrush(grad)
+    painter.setPen(QPen(seam_col, 1.2))
+    painter.drawRoundedRect(rect, 7, 7)
+
+    # Costura interior perimetral simulando forro de cuero/gamuza de portada
+    painter.setPen(QPen(seam_col, 1.0, Qt.PenStyle.DashLine))
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    painter.drawRoundedRect(rect.adjusted(10, 10, -10, -10), 6, 6)
+
+    # Bolsillo interior inferior de portada
+    if adv.get("inside_show_pocket", True):
+        pocket_h = rect.height() * 0.24
+        pocket_rect = QRectF(rect.left() + 14, rect.bottom() - pocket_h - 14, rect.width() - 28, pocket_h)
+        pocket_path = QPainterPath()
+        pocket_path.moveTo(pocket_rect.left(), pocket_rect.top() + 14)
+        pocket_path.lineTo(pocket_rect.right(), pocket_rect.top())
+        pocket_path.lineTo(pocket_rect.right(), pocket_rect.bottom())
+        pocket_path.lineTo(pocket_rect.left(), pocket_rect.bottom())
+        pocket_path.closeSubpath()
+        painter.setPen(QPen(seam_col, 1.1))
+        painter.setBrush(base_col.darker(132))
+        painter.drawPath(pocket_path)
+
+    # Emblema de título / subtítulo del interior de portada
+    if adv.get("inside_show_title", True):
+        custom_title = adv.get("inside_title")
+        display_title = custom_title if (custom_title is not None and str(custom_title).strip()) else (folder_name or "Mi Binder")
+        custom_sub = adv.get("inside_subtitle")
+        display_sub = custom_sub if custom_sub is not None else "POKEBINDER  •  INTERIOR PORTADA"
+
+        painter.setPen(text_col)
+        painter.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
+        painter.drawText(
+            QRectF(rect.left() + 18, rect.top() + rect.height() * 0.34, rect.width() - 36, 32),
+            Qt.AlignmentFlag.AlignCenter,
+            display_title,
+        )
+        if display_sub:
+            painter.setFont(QFont("Segoe UI", 8, QFont.Weight.DemiBold))
+            painter.setPen(QColor(text_col.red(), text_col.green(), text_col.blue(), 120))
+            painter.drawText(
+                QRectF(rect.left() + 18, rect.top() + rect.height() * 0.34 + 28, rect.width() - 36, 22),
+                Qt.AlignmentFlag.AlignCenter,
+                display_sub,
+            )
+
+    if include_advanced:
+        clip_path = QPainterPath()
+        clip_path.addRoundedRect(rect, 7, 7)
+        painter.save()
+        painter.setClipPath(clip_path)
+        render_advanced_elements(painter, rect, adv.get("inside", []))
+        painter.restore()
 
 
 class _EditableCoverCanvas(QWidget):
@@ -793,6 +898,8 @@ class AdvancedCoverStudioDialog(QDialog):
         custom_image: str | None = None,
         advanced_design: dict | None = None,
         face_renderer=None,
+        initial_face: str = "front",
+        interior_color: str | None = None,
         parent=None,
     ):
         super().__init__(parent)
@@ -802,6 +909,7 @@ class AdvancedCoverStudioDialog(QDialog):
         self._custom_color = custom_color
         self._custom_image = custom_image
         self._face_renderer = face_renderer
+        self._interior_color = interior_color or "#18181e"
         self._adv = normalize_advanced_design(advanced_design)
         self._face = "front"
         self._selected_idx = -1
@@ -985,6 +1093,13 @@ class AdvancedCoverStudioDialog(QDialog):
         self.btn_face_front.clicked.connect(lambda: self._switch_face("front"))
         self.btn_face_back.clicked.connect(lambda: self._switch_face("back"))
 
+        self.btn_face_inside = None
+        if item_type == "binder":
+            self.btn_face_inside = QPushButton(t("Interior Portada"))
+            self.btn_face_inside.setCheckable(True)
+            face_group.addButton(self.btn_face_inside)
+            self.btn_face_inside.clicked.connect(lambda: self._switch_face("inside"))
+
         self.btn_back_color = QPushButton(t("Color Trasero"))
         self.btn_back_color.clicked.connect(self._pick_back_color)
 
@@ -996,10 +1111,46 @@ class AdvancedCoverStudioDialog(QDialog):
 
         top_bar.addWidget(self.btn_face_front)
         top_bar.addWidget(self.btn_face_back)
+        if self.btn_face_inside is not None:
+            top_bar.addWidget(self.btn_face_inside)
         top_bar.addWidget(self.btn_back_color)
         top_bar.addStretch()
         top_bar.addWidget(btn_3d)
         center_col.addLayout(top_bar)
+
+        # Barra de controles específicos para la cara interior de portada (Issue #59)
+        self.inside_controls_bar = QWidget()
+        inside_lay = QHBoxLayout(self.inside_controls_bar)
+        inside_lay.setContentsMargins(0, 0, 0, 0)
+        inside_lay.setSpacing(6)
+
+        self.btn_inside_color = QPushButton(t("Color Interior"))
+        self.btn_inside_color.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_inside_color.clicked.connect(self._pick_inside_color)
+        inside_lay.addWidget(self.btn_inside_color)
+
+        self.btn_toggle_pocket = QPushButton(t("Bolsillo"))
+        self.btn_toggle_pocket.setCheckable(True)
+        self.btn_toggle_pocket.setChecked(self._adv.get("inside_show_pocket", True))
+        self.btn_toggle_pocket.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_toggle_pocket.toggled.connect(self._on_inside_pocket_toggled)
+        inside_lay.addWidget(self.btn_toggle_pocket)
+
+        self.btn_toggle_title = QPushButton(t("Emblema"))
+        self.btn_toggle_title.setCheckable(True)
+        self.btn_toggle_title.setChecked(self._adv.get("inside_show_title", True))
+        self.btn_toggle_title.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_toggle_title.toggled.connect(self._on_inside_title_toggled)
+        inside_lay.addWidget(self.btn_toggle_title)
+
+        self.txt_inside_title = QLineEdit()
+        self.txt_inside_title.setPlaceholderText(t("Título interior (opcional)..."))
+        self.txt_inside_title.setText(self._adv.get("inside_title") or "")
+        self.txt_inside_title.textChanged.connect(self._on_inside_title_text_changed)
+        inside_lay.addWidget(self.txt_inside_title, stretch=1)
+
+        self.inside_controls_bar.setVisible(False)
+        center_col.addWidget(self.inside_controls_bar)
 
         self.canvas = _EditableCoverCanvas(self._provide_preview, self)
         self.canvas.selection_changed.connect(self._on_canvas_selection)
@@ -1113,6 +1264,14 @@ class AdvancedCoverStudioDialog(QDialog):
 
         root.addWidget(right_panel)
 
+        if initial_face == "inside" and self.btn_face_inside is not None:
+            self.btn_face_inside.setChecked(True)
+            self._face = "inside"
+            self.inside_controls_bar.setVisible(True)
+        elif initial_face == "back":
+            self.btn_face_back.setChecked(True)
+            self._face = "back"
+
         self._refresh_canvas_and_layers()
 
     def _current_list(self) -> list[dict]:
@@ -1123,6 +1282,23 @@ class AdvancedCoverStudioDialog(QDialog):
             return self._item_type == "binder"
         if req == "base_face_pixmap":
             face, w, h = args
+            if face == "inside":
+                pix = QPixmap(max(16, int(w)), max(16, int(h)))
+                pix.fill(Qt.GlobalColor.transparent)
+                p = QPainter(pix)
+                try:
+                    p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+                    render_inside_cover_surface(
+                        p,
+                        QRectF(0.0, 0.0, float(pix.width()), float(pix.height())),
+                        self._interior_color,
+                        self._name,
+                        advanced_design=self._adv,
+                        include_advanced=False,
+                    )
+                finally:
+                    p.end()
+                return pix
             if self._face_renderer:
                 return self._face_renderer(face, w, h, self._adv.get("back_color"), include_advanced=False)
             pix = QPixmap(w, h)
@@ -1133,7 +1309,29 @@ class AdvancedCoverStudioDialog(QDialog):
     def _switch_face(self, face: str):
         self._face = face
         self._selected_idx = -1
+        if hasattr(self, "inside_controls_bar"):
+            self.inside_controls_bar.setVisible(face == "inside" and self._item_type == "binder")
         self._refresh_canvas_and_layers()
+
+    def _pick_inside_color(self):
+        init = QColor(self._adv.get("inside_color") or self._interior_color or "#18181e")
+        c = QColorDialog.getColor(init, self, t("Color de interior de portada"))
+        if c.isValid():
+            self._adv["inside_color"] = c.name()
+            self.canvas.update()
+
+    def _on_inside_pocket_toggled(self, checked: bool):
+        self._adv["inside_show_pocket"] = bool(checked)
+        self.canvas.update()
+
+    def _on_inside_title_toggled(self, checked: bool):
+        self._adv["inside_show_title"] = bool(checked)
+        self.canvas.update()
+
+    def _on_inside_title_text_changed(self, txt: str):
+        clean = txt.strip()
+        self._adv["inside_title"] = clean if clean else None
+        self.canvas.update()
 
     def _add_element(self, el: dict):
         lst = self._current_list()

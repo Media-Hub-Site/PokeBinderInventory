@@ -229,6 +229,8 @@ def ensure_db_schema_up_to_date():
                 cur.execute("ALTER TABLE usuario_carta ADD COLUMN idioma VARCHAR DEFAULT 'es'")
             if "categoria" not in cols:
                 cur.execute("ALTER TABLE usuario_carta ADD COLUMN categoria VARCHAR")
+            if "cantidad" not in cols:
+                cur.execute("ALTER TABLE usuario_carta ADD COLUMN cantidad INTEGER NOT NULL DEFAULT 1")
             
             cur.execute("PRAGMA table_info(Cartas)")
             cols_cartas = [row[1] for row in cur.fetchall()]

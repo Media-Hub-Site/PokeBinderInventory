@@ -214,10 +214,10 @@ class GaleriaCartasInventario(QWidget):
 
         # Vista de Lista tipo Excel con columnas ajustables (Issue #58)
         self.list_table = QTableWidget()
-        self.list_table.setColumnCount(9)
+        self.list_table.setColumnCount(10)
         self.list_table.setHorizontalHeaderLabels([
             t("#Dex"), t("Nombre"), t("Tipo"), t("Generación"),
-            t("Rareza"), t("Variante"), t("Edición"), t("Idioma"), t("Precio (USD)")
+            t("Rareza"), t("Variante"), t("Edición"), t("Idioma"), t("Copias"), t("Precio (USD)")
         ])
         self.list_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.list_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -228,13 +228,14 @@ class GaleriaCartasInventario(QWidget):
         self.list_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self.list_table.horizontalHeader().setStretchLastSection(True)
         self.list_table.setColumnWidth(0, 58)
-        self.list_table.setColumnWidth(1, 210)
-        self.list_table.setColumnWidth(2, 90)
+        self.list_table.setColumnWidth(1, 200)
+        self.list_table.setColumnWidth(2, 85)
         self.list_table.setColumnWidth(3, 95)
-        self.list_table.setColumnWidth(4, 120)
-        self.list_table.setColumnWidth(5, 90)
-        self.list_table.setColumnWidth(6, 150)
-        self.list_table.setColumnWidth(7, 65)
+        self.list_table.setColumnWidth(4, 115)
+        self.list_table.setColumnWidth(5, 85)
+        self.list_table.setColumnWidth(6, 140)
+        self.list_table.setColumnWidth(7, 60)
+        self.list_table.setColumnWidth(8, 65)
         self.list_table.setStyleSheet("""
             QTableWidget {
                 background-color: #ffffff;
@@ -853,7 +854,7 @@ class GaleriaCartasInventario(QWidget):
         if hasattr(self, "energy_bar"):
             self.energy_bar.set_active_zoom(tam)
 
-        q = self.session.query(Cartas, UsuarioCarta.variante).join(
+        q = self.session.query(Cartas, UsuarioCarta.variante, UsuarioCarta.cantidad).join(
             UsuarioCarta,
             and_(
                 Cartas.id_api == UsuarioCarta.carta_id,
@@ -894,7 +895,7 @@ class GaleriaCartasInventario(QWidget):
         cartas_tuples = q.all()
 
         self._current_cards_map.clear()
-        for c, _v in cartas_tuples:
+        for c, _v, _qty in cartas_tuples:
             c_lang = c.idioma or language_manager.current_language
             self._current_cards_map[f"{c.id_api}:{c_lang}"] = c
 
@@ -910,7 +911,7 @@ class GaleriaCartasInventario(QWidget):
         self.labels_por_id.clear()
         self.card_widgets_por_key.clear()
 
-        for carta, variante_db in cartas_tuples:
+        for carta, variante_db, cantidad_db in cartas_tuples:
             nombre = carta.nombre
             id_api = carta.id_api
             card_lang = carta.idioma or language_manager.current_language
@@ -934,7 +935,8 @@ class GaleriaCartasInventario(QWidget):
                 pixmap = get_card_placeholder_pixmap(size, nombre)
                 needs_download = True
 
-            card_widget = CardItemWidget(carta, pixmap, size, variante=variante_db or "Normal")
+            owned_qty = max(1, int(cantidad_db or 1))
+            card_widget = CardItemWidget(carta, pixmap, size, variante=variante_db or "Normal", owned_qty=owned_qty)
             card_widget.image_label.card_key = card_key
             card_widget.image_label.clicked.connect(self.seleccionar_carta)
             card_widget.variant_badge.variant_changed.connect(self.cambiar_variante_carta)
@@ -1002,11 +1004,12 @@ class GaleriaCartasInventario(QWidget):
     def _populate_list_table(self, cartas_tuples):
         self.list_table.blockSignals(True)
         self.list_table.setRowCount(len(cartas_tuples))
-        for r_idx, (carta, variante_db) in enumerate(cartas_tuples):
+        for r_idx, (carta, variante_db, cantidad_db) in enumerate(cartas_tuples):
             card_lang = carta.idioma or language_manager.current_language
             card_key = f"{carta.id_api}:{card_lang}"
             dex_txt = f"#{carta.pokedex_id:04d}" if getattr(carta, "pokedex_id", None) else "-"
             price_val = f"${float(carta.price):,.2f}" if carta.price else "-"
+            qty_val = f"x{max(1, int(cantidad_db or 1))}"
             vals = [
                 dex_txt,
                 carta.nombre or "",
@@ -1016,13 +1019,14 @@ class GaleriaCartasInventario(QWidget):
                 variante_db or "Normal",
                 carta.edition or carta.set_name or "-",
                 (card_lang or "").upper(),
+                qty_val,
                 price_val,
             ]
             for c_idx, txt in enumerate(vals):
                 item = QTableWidgetItem(txt)
                 if c_idx == 0:
                     item.setData(Qt.ItemDataRole.UserRole, card_key)
-                if c_idx in (0, 7, 8):
+                if c_idx in (0, 7, 8, 9):
                     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.list_table.setItem(r_idx, c_idx, item)
             if card_key in self.cartas_seleccionadas:
@@ -1227,7 +1231,13 @@ class GaleriaCartasInventario(QWidget):
                     .filter(Cartas.id_api == id_api).first()
 
             if c:
-                resultado.append({"id_api": c[0], "nombre": c[1], "idioma": c[2]})
+                rel = self.session.query(UsuarioCarta.cantidad).filter(
+                    UsuarioCarta.usuario_nombre == self.nombre_usuario,
+                    UsuarioCarta.carta_id == c[0],
+                    func.coalesce(UsuarioCarta.idioma, "es") == (c[2] or "es"),
+                ).first()
+                qty = max(1, int(rel[0] or 1)) if rel else 1
+                resultado.append({"id_api": c[0], "nombre": c[1], "idioma": c[2], "cantidad": qty})
 
         return resultado
 
@@ -1276,7 +1286,7 @@ class GaleriaCartasInventario(QWidget):
     def actualizar_valor_total(self):
         """Calcula el valor acumulado de la colección actualmente seleccionada ('Todas' o una sub-colección) (Issue #37)."""
         q = (
-            self.session.query(func.sum(Cartas.price))
+            self.session.query(func.sum(Cartas.price * func.coalesce(UsuarioCarta.cantidad, 1)))
             .join(
                 UsuarioCarta,
                 and_(

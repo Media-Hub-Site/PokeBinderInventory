@@ -4,10 +4,11 @@ from MyQtApp.models import UsuarioCarta, Cartas, Categoria
 
 def agregar_cartas_usuario(usuario_nombre, cartas_info, categoria=None):
     """
-    Agrega una lista de cartas a un usuario específico indicando su id_api e idioma.
-    cartas_info puede ser una lista de dicts [{'id_api': ..., 'idioma': ...}], tuplas (id_api, idioma), o cadenas id_api.
+    Agrega una lista de cartas a un usuario específico indicando su id_api, idioma y cantidad de copias.
+    cartas_info puede ser una lista de dicts [{'id_api': ..., 'idioma': ..., 'cantidad': ...}],
+    tuplas (id_api, idioma), o cadenas id_api.
     categoria: nombre opcional de la categoría asignada.
-    Retorna la cantidad de cartas agregadas con éxito.
+    Retorna el total de copias agregadas con éxito.
     """
     exitos = 0
     session = SessionLocal()
@@ -17,14 +18,20 @@ def agregar_cartas_usuario(usuario_nombre, cartas_info, categoria=None):
                 carta_id = item.get("id_api")
                 idioma = item.get("idioma", "es")
                 item_cat = item.get("categoria", categoria)
+                try:
+                    qty = max(1, int(item.get("cantidad", 1) or 1))
+                except (ValueError, TypeError):
+                    qty = 1
             elif isinstance(item, (tuple, list)):
                 carta_id = item[0]
                 idioma = item[1] if len(item) > 1 else "es"
                 item_cat = categoria
+                qty = 1
             else:
                 carta_id = str(item)
                 idioma = "es"
                 item_cat = categoria
+                qty = 1
 
             if not carta_id:
                 continue
@@ -33,28 +40,30 @@ def agregar_cartas_usuario(usuario_nombre, cartas_info, categoria=None):
             existe = session.query(UsuarioCarta).filter_by(
                 usuario_nombre=usuario_nombre, carta_id=carta_id, idioma=idioma
             ).first()
-            
+
             if not existe:
                 nueva_carta = UsuarioCarta(
                     usuario_nombre=usuario_nombre,
                     carta_id=carta_id,
                     idioma=idioma,
-                    categoria=item_cat
+                    categoria=item_cat,
+                    cantidad=qty,
                 )
                 session.add(nueva_carta)
-                exitos += 1
+                exitos += qty
             else:
-                # Si ya existía y el usuario asignó explícitamente una carpeta, actualizarla
+                existe.cantidad = max(1, int(getattr(existe, "cantidad", 1) or 1)) + qty
                 if item_cat:
                     existe.categoria = item_cat
-                
+                exitos += qty
+
         session.commit()
     except Exception as e:
         print(f"Error al agregar cartas: {e}")
         session.rollback()
     finally:
         session.close()
-        
+
     return exitos
 
 
@@ -105,10 +114,12 @@ def eliminar_categoria_usuario(usuario_nombre, nombre_categoria):
     finally:
         session.close()
 
-def eliminar_cartas_usuario(usuario_nombre, cartas_info):
+def eliminar_cartas_usuario(usuario_nombre, cartas_info, mode="all"):
     """
     Elimina una lista de cartas del inventario de un usuario específico respetando idioma.
-    Retorna la cantidad de cartas eliminadas.
+    mode="all" elimina el registro completo (todas las copias);
+    mode="one" resta una copia (o elimina el registro si solo quedaba 1).
+    Retorna la cantidad de copias/registros eliminados.
     """
     eliminados = 0
     session = SessionLocal()
@@ -130,19 +141,24 @@ def eliminar_cartas_usuario(usuario_nombre, cartas_info):
             q = session.query(UsuarioCarta).filter_by(usuario_nombre=usuario_nombre, carta_id=carta_id)
             if idioma:
                 q = q.filter_by(idioma=idioma)
-            
+
             registro = q.first()
             if registro:
-                session.delete(registro)
-                eliminados += 1
-                
+                qty_actual = max(1, int(getattr(registro, "cantidad", 1) or 1))
+                if mode == "one" and qty_actual > 1:
+                    registro.cantidad = qty_actual - 1
+                    eliminados += 1
+                else:
+                    session.delete(registro)
+                    eliminados += qty_actual
+
         session.commit()
     except Exception as e:
         print(f"Error al eliminar cartas: {e}")
         session.rollback()
     finally:
         session.close()
-        
+
     return eliminados
 
 def obtener_cartas_usuario(usuario_nombre):

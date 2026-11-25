@@ -6,6 +6,7 @@ import requests
 from PIL import Image
 from PyQt6.QtGui import QPixmap, QPainter, QColor, QFont, QLinearGradient
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QObject, QRunnable, QThreadPool, QRect
+from MyQtApp.ui.pixmap_cache import get_cached_pixmap
 
 from MyQtApp.config import (
     ASSETS_DIR,
@@ -233,15 +234,12 @@ def get_hd_pixmap(id_api, nombre_archivo=None, idioma="es", size=None):
 
     for path in candidates:
         if os.path.exists(path):
-            pix = QPixmap(path)
+            pix = (
+                get_cached_pixmap(path, size[0], size[1], keep_aspect=True, smooth=True)
+                if size
+                else get_cached_pixmap(path)
+            )
             if pix and not pix.isNull():
-                if size:
-                    pix = pix.scaled(
-                        size[0],
-                        size[1],
-                        Qt.AspectRatioMode.KeepAspectRatio,
-                        Qt.TransformationMode.SmoothTransformation,
-                    )
                 return pix
     return None
 
@@ -278,15 +276,12 @@ def get_webp_pixmap(id_api, nombre_archivo=None, idioma="es", size=None, allow_l
         for k in possible_keys:
             path = _image_cache.get(k)
             if path and os.path.exists(path):
-                pix = QPixmap(path)
+                pix = (
+                    get_cached_pixmap(path, size[0], size[1], keep_aspect=True, smooth=True)
+                    if size
+                    else get_cached_pixmap(path)
+                )
                 if pix and not pix.isNull():
-                    if size:
-                        pix = pix.scaled(
-                            size[0],
-                            size[1],
-                            Qt.AspectRatioMode.KeepAspectRatio,
-                            Qt.TransformationMode.SmoothTransformation,
-                        )
                     return pix
 
     if allow_lang_fallback:

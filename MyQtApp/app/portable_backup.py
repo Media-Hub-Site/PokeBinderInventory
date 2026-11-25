@@ -44,6 +44,7 @@ def export_user_backup_zip(usuario: str, zip_path: str) -> dict:
                 "idioma": r.idioma or "es",
                 "variante": r.variante or "Normal",
                 "categoria": r.categoria,
+                "cantidad": max(1, int(getattr(r, "cantidad", 1) or 1)),
             }
             for r in uc_rows
         ]
@@ -169,10 +170,10 @@ def import_user_backup_zip(target_usuario: str, zip_path: str) -> dict:
                 existing_cats.add(folder_name)
                 restored_folders += 1
 
-        # 2. Restaurar Cartas de Colección (evitando duplicados exactos)
+        # 2. Restaurar Cartas de Colección (evitando duplicar filas por carta+idioma)
         restored_cards = 0
         existing_cards = {
-            (r.carta_id, r.idioma or "es", r.variante or "Normal", r.categoria)
+            (r.carta_id, r.idioma or "es")
             for r in session.query(UsuarioCarta).filter(UsuarioCarta.usuario_nombre == target_usuario).all()
         }
         for entry in col_payload.get("cards", []):
@@ -182,7 +183,11 @@ def import_user_backup_zip(target_usuario: str, zip_path: str) -> dict:
             lang = entry.get("idioma") or "es"
             var = entry.get("variante") or "Normal"
             cat = entry.get("categoria")
-            sig = (cid, lang, var, cat)
+            try:
+                qty = max(1, int(entry.get("cantidad") or 1))
+            except (ValueError, TypeError):
+                qty = 1
+            sig = (cid, lang)
             if sig in existing_cards:
                 continue
             session.add(
@@ -192,6 +197,7 @@ def import_user_backup_zip(target_usuario: str, zip_path: str) -> dict:
                     idioma=lang,
                     variante=var,
                     categoria=cat,
+                    cantidad=qty,
                 )
             )
             existing_cards.add(sig)

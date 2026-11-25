@@ -576,7 +576,7 @@ class MainWindow(QWidget):
             if hasattr(galeria_busqueda, 'limpiar_seleccion'):
                 galeria_busqueda.limpiar_seleccion()
             msg_cat = f" en la colección '{carpeta_elegida}'" if carpeta_elegida else ""
-            self.mostrar_mensaje(f"Se han agregado {exitos} carta(s) a tus colecciones{msg_cat}.")
+            self.mostrar_mensaje(f"Se han agregado {exitos} copia(s) de carta(s) a tus colecciones{msg_cat}.")
             try:
                 inventario = self.paginas.widget(2)
                 if hasattr(inventario, 'cargar_categorias_combo'):
@@ -588,6 +588,9 @@ class MainWindow(QWidget):
                         inventario.actualizar_total_cartas()
                     if hasattr(inventario, 'actualizar_galeria'):
                         inventario.actualizar_galeria()
+                binder = self.paginas.widget(1)
+                if hasattr(binder, 'refresh_inventory'):
+                    binder.refresh_inventory()
             except Exception as e:
                 print(f"Error al refrescar inventario tras agregar: {e}")
         else:
@@ -756,22 +759,43 @@ class MainWindow(QWidget):
             return
 
         nombres = [c.get('nombre', c.get('id_api')) if isinstance(c, dict) else str(c) for c in cartas]
-        texto = f"¿Seguro que quieres eliminar {len(nombres)} carta(s) de tu inventario?\n\n"
-        texto += ", ".join(nombres[:6])
-        if len(nombres) > 6:
-            texto += ", ..."
+        has_multi_copies = any(isinstance(c, dict) and int(c.get("cantidad", 1) or 1) > 1 for c in cartas)
 
-        resp = QMessageBox.question(self, "Confirmar eliminación", texto,
-                                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-        if resp != QMessageBox.StandardButton.Yes:
-            return
+        delete_mode = "all"
+        if has_multi_copies:
+            box = QMessageBox(self)
+            box.setWindowTitle(t("Confirmar eliminación"))
+            resumen = ", ".join(nombres[:6]) + (", ..." if len(nombres) > 6 else "")
+            box.setText(
+                f"{t('Tienes cartas seleccionadas con múltiples copias.')}\n\n{resumen}\n\n"
+                f"{t('¿Deseas quitar 1 copia de cada carta o eliminar todas las copias?')}"
+            )
+            btn_one = box.addButton(t("Quitar 1 copia"), QMessageBox.ButtonRole.AcceptRole)
+            btn_all = box.addButton(t("Eliminar todas"), QMessageBox.ButtonRole.DestructiveRole)
+            btn_cancel = box.addButton(t("Cancelar"), QMessageBox.ButtonRole.RejectRole)
+            box.setDefaultButton(btn_one)
+            box.exec()
+            clicked = box.clickedButton()
+            if clicked == btn_cancel or clicked is None:
+                return
+            delete_mode = "one" if clicked == btn_one else "all"
+        else:
+            texto = f"¿Seguro que quieres eliminar {len(nombres)} carta(s) de tu inventario?\n\n"
+            texto += ", ".join(nombres[:6])
+            if len(nombres) > 6:
+                texto += ", ..."
 
-        eliminados = eliminar_cartas_usuario(self.usuario, cartas)
+            resp = QMessageBox.question(self, "Confirmar eliminación", texto,
+                                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            if resp != QMessageBox.StandardButton.Yes:
+                return
+
+        eliminados = eliminar_cartas_usuario(self.usuario, cartas, mode=delete_mode)
 
         if eliminados:
             if hasattr(inventario, 'limpiar_seleccion'):
                 inventario.limpiar_seleccion()
-            self.mostrar_mensaje(f"Se han eliminado {eliminados} carta(s) de tu inventario.")
+            self.mostrar_mensaje(f"Se han eliminado {eliminados} copia(s) de tu inventario.")
         else:
             self.mostrar_mensaje("No se eliminaron cartas (posiblemente ya no existían en la tabla o hubo error).")
 
@@ -783,6 +807,9 @@ class MainWindow(QWidget):
                     inventario.actualizar_total_cartas()
                 if hasattr(inventario, 'actualizar_galeria'):
                     inventario.actualizar_galeria()
+            binder = self.paginas.widget(1)
+            if hasattr(binder, 'refresh_inventory'):
+                binder.refresh_inventory()
         except Exception as e:
             print(f"Error refrescando inventario tras eliminar: {e}")
 

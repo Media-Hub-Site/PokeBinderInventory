@@ -51,6 +51,7 @@ class UsuarioCarta(Base):
     idioma = Column(String, default="es", nullable=False)
     variante = Column(String, default="Normal", nullable=False)
     categoria = Column(String, nullable=True)
+    cantidad = Column(Integer, default=1, nullable=False)
 
     usuario = relationship("Usuarios", back_populates="cartas", foreign_keys=[usuario_nombre])
     carta = relationship("Cartas", back_populates="usuarios", foreign_keys=[carta_id])

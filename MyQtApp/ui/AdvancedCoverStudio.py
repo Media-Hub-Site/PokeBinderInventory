@@ -6,10 +6,10 @@ import os
 import shutil
 import uuid
 
-from PyQt6.QtCore import Qt, QRectF, QPointF, QTimer, pyqtSignal
+from PyQt6.QtCore import Qt, QRectF, QPointF, QSize, QTimer, pyqtSignal
 from PyQt6.QtGui import (
     QPainter, QPainterPath, QColor, QLinearGradient, QRadialGradient,
-    QPen, QBrush, QFont, QPixmap, QPolygonF, QTransform, QImage
+    QPen, QBrush, QFont, QPixmap, QPolygonF, QTransform, QImage, QIcon
 )
 from PyQt6.QtWidgets import (
     QDialog, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
@@ -64,6 +64,7 @@ POKEMON_STICKER_FILES = [
 ]
 
 _sticker_pixmap_cache: dict[str, QPixmap | None] = {}
+_palette_icon_cache: dict[tuple, QIcon] = {}
 
 
 def normalize_advanced_design(raw: dict | None) -> dict:
@@ -359,6 +360,82 @@ def render_advanced_elements(painter: QPainter, target_rect: QRectF, elements: l
             painter.drawText(local_rect, Qt.AlignmentFlag.AlignCenter, txt)
 
         painter.restore()
+
+
+def _render_palette_icon(
+    kind: str,
+    key_or_file: str,
+    color_hex: str = "#f59e0b",
+    size: int = 44,
+) -> QIcon:
+    """Genera y cachea un QIcon visual de alta nitidez para la paleta de stickers y figuras."""
+    cache_key = (kind, key_or_file, color_hex, int(size))
+    cached = _palette_icon_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    pix = QPixmap(int(size), int(size))
+    pix.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pix)
+    try:
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+
+        if kind == "sticker":
+            el = {
+                "kind": "sticker",
+                "key": key_or_file,
+                "x": 0.5,
+                "y": 0.5,
+                "w": 0.82,
+                "h": 0.82,
+                "rotation": 0,
+                "color": color_hex,
+                "border_color": "#3f2730",
+                "border_width": 1.6,
+                "opacity": 1.0,
+            }
+            render_advanced_elements(painter, QRectF(0.0, 0.0, float(size), float(size)), [el])
+        elif kind == "image":
+            src = resolve_sticker_pixmap(key_or_file)
+            if src and not src.isNull():
+                target_sz = max(8, int(size) - 4)
+                scaled = src.scaled(
+                    target_sz,
+                    target_sz,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+                ox = (float(size) - scaled.width()) / 2.0
+                oy = (float(size) - scaled.height()) / 2.0
+                painter.drawPixmap(QPointF(ox, oy), scaled)
+        elif kind == "shape":
+            if key_or_file == "stripe":
+                w_ratio, h_ratio, rot = 0.84, 0.34, -14
+            elif key_or_file == "frame":
+                w_ratio, h_ratio, rot = 0.76, 0.76, 0
+            else:
+                w_ratio, h_ratio, rot = 0.78, 0.78, 0
+            el = {
+                "kind": "shape",
+                "key": key_or_file,
+                "x": 0.5,
+                "y": 0.5,
+                "w": w_ratio,
+                "h": h_ratio,
+                "rotation": rot,
+                "color": color_hex,
+                "border_color": "#92400e",
+                "border_width": 1.8,
+                "opacity": 0.95,
+            }
+            render_advanced_elements(painter, QRectF(0.0, 0.0, float(size), float(size)), [el])
+    finally:
+        painter.end()
+
+    icon = QIcon(pix)
+    _palette_icon_cache[cache_key] = icon
+    return icon
 
 
 def render_back_cover_surface(
@@ -916,14 +993,19 @@ class AdvancedCoverStudioDialog(QDialog):
 
         title_lbl = t("Estudio Avanzado de Binder") if item_type == "binder" else t("Estudio Avanzado de Portamazos")
         self.setWindowTitle(title_lbl)
-        self.setMinimumSize(940, 620)
-        self.resize(1020, 660)
+        self.setMinimumSize(1130, 680)
+        self.resize(1200, 720)
         self.setStyleSheet("""
             QDialog {
                 background-color: #fff6f8;
                 color: #3f2730;
             }
-            QLabel { color: #5a2a3a; font-weight: 600; }
+            QFrame#StudioSidePanel {
+                background-color: #ffffff;
+                border: 1.5px solid #f2c4ce;
+                border-radius: 12px;
+            }
+            QLabel { color: #5a2a3a; font-weight: 600; border: none; background: transparent; }
             QPushButton {
                 background-color: #ffffff;
                 color: #5a2a3a;
@@ -942,6 +1024,16 @@ class AdvancedCoverStudioDialog(QDialog):
                 color: #ffffff;
                 border-color: #e11d48;
             }
+            QPushButton#VisualPaletteBtn {
+                background-color: #fff9fa;
+                border: 1.5px solid #f2c4ce;
+                border-radius: 10px;
+                padding: 4px;
+            }
+            QPushButton#VisualPaletteBtn:hover {
+                background-color: #ffe4eb;
+                border-color: #f56b7b;
+            }
             QListWidget, QLineEdit, QSpinBox {
                 background-color: #ffffff;
                 color: #3f2730;
@@ -955,10 +1047,10 @@ class AdvancedCoverStudioDialog(QDialog):
         root.setContentsMargins(14, 14, 14, 14)
         root.setSpacing(14)
 
-        # --- Columna Izquierda: Paleta de Stickers, Figuras y Texto ---
+        # --- Columna Izquierda: Paleta Visual de Stickers, Figuras y Texto ---
         left_panel = QFrame()
-        left_panel.setFixedWidth(250)
-        left_panel.setStyleSheet("QFrame { background-color: #ffffff; border: 1.5px solid #f2c4ce; border-radius: 12px; }")
+        left_panel.setObjectName("StudioSidePanel")
+        left_panel.setFixedWidth(256)
         left_lay = QVBoxLayout(left_panel)
         left_lay.setContentsMargins(10, 10, 10, 10)
         left_lay.setSpacing(8)
@@ -969,20 +1061,32 @@ class AdvancedCoverStudioDialog(QDialog):
 
         scroll_pal = QScrollArea()
         scroll_pal.setWidgetResizable(True)
+        scroll_pal.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll_pal.setStyleSheet("QScrollArea { border: none; background: transparent; }")
         pal_inner = QWidget()
+        pal_inner.setObjectName("StudioPalInner")
+        pal_inner.setStyleSheet("QWidget#StudioPalInner { background-color: #ffffff; border: none; }")
         pal_vbox = QVBoxLayout(pal_inner)
-        pal_vbox.setContentsMargins(0, 0, 2, 0)
+        pal_vbox.setContentsMargins(0, 0, 6, 0)
         pal_vbox.setSpacing(8)
 
-        # Stickers vectoriales
+        self._palette_sticker_buttons: list[QPushButton] = []
+        self._palette_image_buttons: list[QPushButton] = []
+        self._palette_shape_buttons: list[QPushButton] = []
+
+        # Stickers vectoriales (cuadrícula visual 3 columnas)
         lbl_st = QLabel(t("Stickers Pokémon"))
         lbl_st.setStyleSheet("font-size: 11px; color: #8c5464; border: none;")
         pal_vbox.addWidget(lbl_st)
         grid_st = QGridLayout()
-        grid_st.setSpacing(5)
+        grid_st.setSpacing(6)
         for i, (key, label, col) in enumerate(STICKER_PRESETS):
-            b = QPushButton(t(label))
+            b = QPushButton("")
+            b.setObjectName("VisualPaletteBtn")
+            b.setFixedSize(60, 52)
+            b.setIcon(_render_palette_icon("sticker", key, col, size=40))
+            b.setIconSize(QSize(36, 36))
+            b.setToolTip(t(label))
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.clicked.connect(lambda ch, k=key, c=col: self._add_element({
                 "id": uuid.uuid4().hex[:8],
@@ -996,17 +1100,25 @@ class AdvancedCoverStudioDialog(QDialog):
                 "border_width": 2,
                 "opacity": 1.0,
             }))
-            grid_st.addWidget(b, i // 2, i % 2)
+            grid_st.addWidget(b, i // 3, i % 3)
+            self._palette_sticker_buttons.append(b)
         pal_vbox.addLayout(grid_st)
 
-        # Stickers de ilustraciones Pokémon
+        # Stickers de ilustraciones Pokémon (cuadrícula visual 3 columnas)
         lbl_pk = QLabel(t("Ilustraciones Pokémon"))
         lbl_pk.setStyleSheet("font-size: 11px; color: #8c5464; border: none;")
         pal_vbox.addWidget(lbl_pk)
         grid_pk = QGridLayout()
-        grid_pk.setSpacing(5)
+        grid_pk.setSpacing(6)
         for i, (fname, label) in enumerate(POKEMON_STICKER_FILES):
-            b = QPushButton(label)
+            ico = _render_palette_icon("image", fname, size=48)
+            b = QPushButton("" if not ico.isNull() else label)
+            b.setObjectName("VisualPaletteBtn")
+            b.setFixedSize(60, 58)
+            if not ico.isNull():
+                b.setIcon(ico)
+                b.setIconSize(QSize(44, 44))
+            b.setToolTip(label)
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.clicked.connect(lambda ch, fn=fname: self._add_element({
                 "id": uuid.uuid4().hex[:8],
@@ -1020,22 +1132,28 @@ class AdvancedCoverStudioDialog(QDialog):
                 "border_width": 0,
                 "opacity": 1.0,
             }))
-            grid_pk.addWidget(b, i // 2, i % 2)
+            grid_pk.addWidget(b, i // 3, i % 3)
+            self._palette_image_buttons.append(b)
         pal_vbox.addLayout(grid_pk)
 
-        btn_custom_sticker = QPushButton(t("+ Sticker Imagen Propia"))
+        btn_custom_sticker = QPushButton(t("+ Imagen Propia"))
         btn_custom_sticker.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_custom_sticker.clicked.connect(self._add_custom_image_sticker)
         pal_vbox.addWidget(btn_custom_sticker)
 
-        # Figuras geométricas
+        # Figuras geométricas (cuadrícula visual 3 columnas)
         lbl_sh = QLabel(t("Figuras para Formas"))
         lbl_sh.setStyleSheet("font-size: 11px; color: #8c5464; border: none;")
         pal_vbox.addWidget(lbl_sh)
         grid_sh = QGridLayout()
-        grid_sh.setSpacing(5)
+        grid_sh.setSpacing(6)
         for i, (key, label) in enumerate(SHAPE_PRESETS):
-            b = QPushButton(t(label))
+            b = QPushButton("")
+            b.setObjectName("VisualPaletteBtn")
+            b.setFixedSize(60, 52)
+            b.setIcon(_render_palette_icon("shape", key, "#f59e0b", size=40))
+            b.setIconSize(QSize(36, 36))
+            b.setToolTip(t(label))
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.clicked.connect(lambda ch, k=key: self._add_element({
                 "id": uuid.uuid4().hex[:8],
@@ -1050,7 +1168,8 @@ class AdvancedCoverStudioDialog(QDialog):
                 "border_width": 2,
                 "opacity": 0.9,
             }))
-            grid_sh.addWidget(b, i // 2, i % 2)
+            grid_sh.addWidget(b, i // 3, i % 3)
+            self._palette_shape_buttons.append(b)
         pal_vbox.addLayout(grid_sh)
 
         # Texto personalizado
@@ -1075,17 +1194,21 @@ class AdvancedCoverStudioDialog(QDialog):
         left_lay.addWidget(scroll_pal, stretch=1)
         root.addWidget(left_panel)
 
-        # --- Columna Central: Switch Frente/Atrás + Canvas + Botón Vista 3D ---
+        # --- Columna Central: Switch Delantera/Trasera/Portada + Canvas + Botón Vista 3D ---
         center_col = QVBoxLayout()
         center_col.setSpacing(10)
 
         top_bar = QHBoxLayout()
         top_bar.setSpacing(8)
-        self.btn_face_front = QPushButton(t("Cara Delantera"))
+        self.btn_face_front = QPushButton(t("Delantera"))
         self.btn_face_front.setCheckable(True)
         self.btn_face_front.setChecked(True)
-        self.btn_face_back = QPushButton(t("Parte Trasera"))
+        self.btn_face_front.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
+
+        self.btn_face_back = QPushButton(t("Trasera"))
         self.btn_face_back.setCheckable(True)
+        self.btn_face_back.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
+
         face_group = QButtonGroup(self)
         face_group.setExclusive(True)
         face_group.addButton(self.btn_face_front)
@@ -1095,15 +1218,14 @@ class AdvancedCoverStudioDialog(QDialog):
 
         self.btn_face_inside = None
         if item_type == "binder":
-            self.btn_face_inside = QPushButton(t("Interior Portada"))
+            self.btn_face_inside = QPushButton(t("Portada"))
             self.btn_face_inside.setCheckable(True)
+            self.btn_face_inside.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
             face_group.addButton(self.btn_face_inside)
             self.btn_face_inside.clicked.connect(lambda: self._switch_face("inside"))
 
-        self.btn_back_color = QPushButton(t("Color Trasero"))
-        self.btn_back_color.clicked.connect(self._pick_back_color)
-
         btn_3d = QPushButton(t("Vista 3D"))
+        btn_3d.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         btn_3d.setStyleSheet(
             "background-color: #0ea5e9; color: #ffffff; border-color: #0284c7; font-weight: 700;"
         )
@@ -1113,7 +1235,6 @@ class AdvancedCoverStudioDialog(QDialog):
         top_bar.addWidget(self.btn_face_back)
         if self.btn_face_inside is not None:
             top_bar.addWidget(self.btn_face_inside)
-        top_bar.addWidget(self.btn_back_color)
         top_bar.addStretch()
         top_bar.addWidget(btn_3d)
         center_col.addLayout(top_bar)
@@ -1125,6 +1246,7 @@ class AdvancedCoverStudioDialog(QDialog):
         inside_lay.setSpacing(6)
 
         self.btn_inside_color = QPushButton(t("Color Interior"))
+        self.btn_inside_color.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         self.btn_inside_color.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_inside_color.clicked.connect(self._pick_inside_color)
         inside_lay.addWidget(self.btn_inside_color)
@@ -1132,6 +1254,7 @@ class AdvancedCoverStudioDialog(QDialog):
         self.btn_toggle_pocket = QPushButton(t("Bolsillo"))
         self.btn_toggle_pocket.setCheckable(True)
         self.btn_toggle_pocket.setChecked(self._adv.get("inside_show_pocket", True))
+        self.btn_toggle_pocket.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         self.btn_toggle_pocket.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_toggle_pocket.toggled.connect(self._on_inside_pocket_toggled)
         inside_lay.addWidget(self.btn_toggle_pocket)
@@ -1139,6 +1262,7 @@ class AdvancedCoverStudioDialog(QDialog):
         self.btn_toggle_title = QPushButton(t("Emblema"))
         self.btn_toggle_title.setCheckable(True)
         self.btn_toggle_title.setChecked(self._adv.get("inside_show_title", True))
+        self.btn_toggle_title.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         self.btn_toggle_title.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_toggle_title.toggled.connect(self._on_inside_title_toggled)
         inside_lay.addWidget(self.btn_toggle_title)
@@ -1157,7 +1281,8 @@ class AdvancedCoverStudioDialog(QDialog):
         self.canvas.elements_modified.connect(self._sync_inspector_from_selection)
         center_col.addWidget(self.canvas, stretch=1)
 
-        hint = QLabel(t("Arrastra un sticker o figura para moverlo • Usa el círculo azul inferior para cambiar su tamaño"))
+        hint = QLabel(t("Arrastra para mover • Usa el círculo azul para redimensionar"))
+        hint.setWordWrap(True)
         hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         hint.setStyleSheet("font-size: 11px; color: #8c5464;")
         center_col.addWidget(hint)
@@ -1165,8 +1290,8 @@ class AdvancedCoverStudioDialog(QDialog):
 
         # --- Columna Derecha: Capas, Inspector y Guardar ---
         right_panel = QFrame()
-        right_panel.setFixedWidth(260)
-        right_panel.setStyleSheet("QFrame { background-color: #ffffff; border: 1.5px solid #f2c4ce; border-radius: 12px; }")
+        right_panel.setObjectName("StudioSidePanel")
+        right_panel.setFixedWidth(325)
         right_lay = QVBoxLayout(right_panel)
         right_lay.setContentsMargins(10, 10, 10, 10)
         right_lay.setSpacing(8)
@@ -1181,20 +1306,29 @@ class AdvancedCoverStudioDialog(QDialog):
         right_lay.addWidget(self.layer_list)
 
         layer_btns = QHBoxLayout()
+        layer_btns.setSpacing(5)
         btn_up = QPushButton("▲")
+        btn_up.setFixedWidth(30)
+        btn_up.setStyleSheet("padding: 5px 2px;")
         btn_up.setToolTip(t("Subir capa"))
         btn_up.clicked.connect(lambda: self._move_layer(1))
         btn_dn = QPushButton("▼")
+        btn_dn.setFixedWidth(30)
+        btn_dn.setStyleSheet("padding: 5px 2px;")
         btn_dn.setToolTip(t("Bajar capa"))
         btn_dn.clicked.connect(lambda: self._move_layer(-1))
         btn_dup = QPushButton(t("Duplicar"))
+        btn_dup.setStyleSheet("padding: 5px 6px;")
+        btn_dup.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         btn_dup.clicked.connect(self._duplicate_selected)
         btn_del = QPushButton(t("Eliminar"))
+        btn_del.setStyleSheet("padding: 5px 6px;")
+        btn_del.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         btn_del.clicked.connect(self._delete_selected)
         layer_btns.addWidget(btn_up)
         layer_btns.addWidget(btn_dn)
-        layer_btns.addWidget(btn_dup)
-        layer_btns.addWidget(btn_del)
+        layer_btns.addWidget(btn_dup, 1)
+        layer_btns.addWidget(btn_del, 1)
         right_lay.addLayout(layer_btns)
 
         # Propiedades del elemento seleccionado
@@ -1252,14 +1386,16 @@ class AdvancedCoverStudioDialog(QDialog):
 
         actions_row = QHBoxLayout()
         btn_cancel = QPushButton(t("Cancelar"))
+        btn_cancel.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         btn_cancel.clicked.connect(self.reject)
-        btn_ok = QPushButton(t("Aplicar Diseño"))
+        btn_ok = QPushButton(t("Aplicar"))
+        btn_ok.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         btn_ok.setStyleSheet(
             "background-color: #f56b7b; color: #ffffff; border-color: #e11d48; font-weight: 700;"
         )
         btn_ok.clicked.connect(self.accept)
-        actions_row.addWidget(btn_cancel)
-        actions_row.addWidget(btn_ok)
+        actions_row.addWidget(btn_cancel, 1)
+        actions_row.addWidget(btn_ok, 1)
         right_lay.addLayout(actions_row)
 
         root.addWidget(right_panel)

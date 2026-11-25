@@ -402,10 +402,12 @@ class InventorySidebar(QWidget):
                 card_lbl = meta["widget"]
                 owned_val = meta["owned_val"]
                 rem_val = max(0, owned_val - used_val)
-                if card_lbl.remaining_copies == rem_val:
+                should_be_visible = rem_val > 0
+                if card_lbl.remaining_copies == rem_val and (not card_lbl.isHidden()) == should_be_visible:
                     continue
 
                 card_lbl.remaining_copies = rem_val
+                card_lbl.setVisible(should_be_visible)
                 dim_overlay = meta["dim_overlay"]
                 dim_overlay.setVisible(rem_val <= 0)
                 if rem_val <= 0:
@@ -517,6 +519,7 @@ class InventorySidebar(QWidget):
                 )
                 if item_widget:
                     self.cards_layout.addWidget(item_widget, alignment=Qt.AlignmentFlag.AlignHCenter)
+                    item_widget.setVisible(rem_val > 0)
         finally:
             session.close()
 

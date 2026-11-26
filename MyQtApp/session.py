@@ -2,8 +2,10 @@ from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import sessionmaker, declarative_base
 
 from MyQtApp.config import DB_PATH, DATABASE_URL, ensure_user_data_initialized
+from MyQtApp.app.backup import ensure_database_integrity_or_recover
 
 ensure_user_data_initialized()
+ensure_database_integrity_or_recover()
 print(f"Usando base de datos en: {DB_PATH}")
 
 engine = create_engine(DATABASE_URL, echo=False)

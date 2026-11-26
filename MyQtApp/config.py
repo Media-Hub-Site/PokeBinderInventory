@@ -200,7 +200,20 @@ DEFAULT_SETTINGS = {
     "tema_oscuro": False,
     "tamano_fuente": 14,
     "idioma": "Español",
-    "tamano_cartas": "Normal"
+    "tamano_cartas": "Normal",
+    "tcgmatch_api_key": "",
+    "moneda": "USD",
+}
+
+SUPPORTED_CURRENCIES = {
+    "USD": {"name": "USD - Dólar ($)", "symbol": "$", "decimals": 2, "rate_from_usd": 1.0},
+    "CLP": {"name": "CLP - Peso Chileno ($)", "symbol": "$", "decimals": 0, "rate_from_usd": 950.0},
+    "EUR": {"name": "EUR - Euro (€)", "symbol": "€", "decimals": 2, "rate_from_usd": 0.92},
+    "MXN": {"name": "MXN - Peso Mexicano ($)", "symbol": "$", "decimals": 2, "rate_from_usd": 20.2},
+    "ARS": {"name": "ARS - Peso Argentino ($)", "symbol": "$", "decimals": 0, "rate_from_usd": 1000.0},
+    "COP": {"name": "COP - Peso Colombiano ($)", "symbol": "$", "decimals": 0, "rate_from_usd": 4400.0},
+    "PEN": {"name": "PEN - Sol Peruano (S/)", "symbol": "S/", "decimals": 2, "rate_from_usd": 3.75},
+    "BRL": {"name": "BRL - Real Brasileño (R$)", "symbol": "R$", "decimals": 2, "rate_from_usd": 5.80},
 }
 
 ANIMATION_SPEED_FACTORS = {

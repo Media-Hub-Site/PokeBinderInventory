@@ -28,6 +28,8 @@ from MyQtApp.app.price_updater import (
     obtener_precios_multiples_cartas_bd,
     PriceUpdaterThread,
     PRICE_SOURCE_ORDER,
+    format_price,
+    get_active_currency,
 )
 from MyQtApp.i18n import t, language_manager
 from MyQtApp.ui.CardWidget import CardZoomOverlay, VariantBadgeButton, LanguageBadgeLabel, InfoIconLabel
@@ -76,6 +78,8 @@ class BinderView(QWidget):
         self._folder_cover_widgets = {}
         self._card_meta_cache: dict[tuple[str, str], Cartas] = {}
         self.show_card_details = False
+        self.move_pages_mode = False
+        self._selected_move_page: int | None = None
         
         self.load_binder_data()
         
@@ -284,6 +288,19 @@ class BinderView(QWidget):
         self.btn_ver_detalles.clicked.connect(self.toggle_binder_card_details)
         self._refresh_ver_detalles_btn_style()
         details_row.addWidget(self.btn_ver_detalles)
+
+        self.btn_mover_hojas = QPushButton(t("Mover hojas"))
+        self.btn_mover_hojas.setCheckable(True)
+        self.btn_mover_hojas.setChecked(False)
+        self.btn_mover_hojas.setFixedHeight(26)
+        self.btn_mover_hojas.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_mover_hojas.setToolTip(
+            t("Activa el modo para seleccionar o arrastrar una hoja completa hacia otra (intercambia sus cartas)")
+        )
+        self.btn_mover_hojas.clicked.connect(lambda: self.toggle_move_pages_mode())
+        self._refresh_mover_hojas_btn_style()
+        details_row.addWidget(self.btn_mover_hojas)
+
         details_row.addStretch()
         right_layout.addLayout(details_row)
 
@@ -298,6 +315,8 @@ class BinderView(QWidget):
         # Mini-mapa de salto rápido de páginas (Etapa 3)
         self.page_minimap = BinderPageMinimap(self)
         self.page_minimap.spread_selected.connect(self.jump_to_spread)
+        self.page_minimap.page_swap_requested.connect(self.swap_pages)
+        self.page_minimap.page_move_clicked.connect(self.on_page_move_clicked)
         right_layout.addWidget(self.page_minimap)
 
         # Pagination Controls
@@ -461,13 +480,149 @@ class BinderView(QWidget):
         self.show_card_details = not self.show_card_details
         self._refresh_ver_detalles_btn_style()
         for page in (self.page_left, self.page_right):
-            if not page:
+            if not page or not hasattr(page, "slots"):
                 continue
             for slot in page.slots:
                 slot.apply_details_visibility()
 
+    def _refresh_mover_hojas_btn_style(self):
+        if not hasattr(self, "btn_mover_hojas") or not self.btn_mover_hojas:
+            return
+        active = bool(self.move_pages_mode)
+        self.btn_mover_hojas.setChecked(active)
+        self.btn_mover_hojas.setText(t("Listo (Mover hojas)") if active else t("Mover hojas"))
+        if active:
+            self.btn_mover_hojas.setStyleSheet("""
+                QPushButton {
+                    background-color: #0284c7;
+                    color: #ffffff;
+                    font-size: 11px;
+                    font-weight: 700;
+                    border: 1.5px solid #0369a1;
+                    border-radius: 9px;
+                    padding: 2px 14px;
+                }
+                QPushButton:hover {
+                    background-color: #0369a1;
+                }
+            """)
+        else:
+            self.btn_mover_hojas.setStyleSheet("""
+                QPushButton {
+                    background-color: #ffffff;
+                    color: #5a2a3a;
+                    font-size: 11px;
+                    font-weight: 700;
+                    border: 1.5px solid #f2b8c3;
+                    border-radius: 9px;
+                    padding: 2px 14px;
+                }
+                QPushButton:hover {
+                    background-color: #e0f2fe;
+                    border-color: #38bdf8;
+                }
+            """)
+
+    def _apply_move_mode_to_visible_pages(self):
+        current_spread = self.spread_stack.currentWidget() if hasattr(self, "spread_stack") else None
+        if current_spread and hasattr(current_spread, "set_drag_turn_enabled"):
+            current_spread.set_drag_turn_enabled(not self.move_pages_mode)
+        for page in (self.page_left, self.page_right):
+            if page and isinstance(page, BinderPage) and hasattr(page, "set_move_mode"):
+                page.set_move_mode(
+                    self.move_pages_mode,
+                    selected=(self._selected_move_page == page.page_index),
+                )
+
+    def toggle_move_pages_mode(self, force_state: bool | None = None):
+        """Activa o desactiva el modo de arrastre/intercambio completo de hojas del binder."""
+        new_state = (not self.move_pages_mode) if force_state is None else bool(force_state)
+        self.move_pages_mode = new_state
+        self._selected_move_page = None
+        self._refresh_mover_hojas_btn_style()
+        self._apply_move_mode_to_visible_pages()
+        self.refresh_page_minimap()
+        if new_state and self.main_stack.currentWidget() is self.binder_pages_widget:
+            show_toast(
+                t("Arrastra una hoja (o haz clic en dos hojas en la barra inferior H1, H2...) para intercambiarlas"),
+                "info",
+                2800,
+            )
+
+    def on_page_move_clicked(self, page_idx: int):
+        """Permite seleccionar origen y destino haciendo clic en hojas o píldoras H1, H2..."""
+        if not self.move_pages_mode or page_idx < 0:
+            return
+        if self._selected_move_page is None:
+            self._selected_move_page = page_idx
+            self._apply_move_mode_to_visible_pages()
+            self.refresh_page_minimap()
+            show_toast(f"{t('Hoja')} {page_idx + 1} seleccionada. Ahora elige o arrastra hacia la hoja destino.", "info", 2200)
+        elif self._selected_move_page == page_idx:
+            self._selected_move_page = None
+            self._apply_move_mode_to_visible_pages()
+            self.refresh_page_minimap()
+        else:
+            src_page = self._selected_move_page
+            self.swap_pages(src_page, page_idx)
+
+    def swap_pages(self, page_a: int, page_b: int) -> bool:
+        """
+        Intercambia completamente todas las cartas entre dos hojas del binder (page_a <-> page_b).
+        Si la hoja destino estaba vacía, mueve las cartas de page_a a page_b y deja page_a vacía.
+        """
+        if page_a < 0 or page_b < 0 or page_a == page_b or not self.current_folder_id:
+            return False
+
+        cards_dict = self._get_current_cards_dict(self.current_mode)
+        prefix_a = f"{page_a}_"
+        prefix_b = f"{page_b}_"
+
+        entries_a: dict[str, object] = {}
+        entries_b: dict[str, object] = {}
+        keys_to_delete = []
+
+        for key, val in cards_dict.items():
+            if key.startswith(prefix_a):
+                slot_part = key[len(prefix_a):]
+                entries_a[slot_part] = copy.deepcopy(val) if isinstance(val, dict) else val
+                keys_to_delete.append(key)
+            elif key.startswith(prefix_b):
+                slot_part = key[len(prefix_b):]
+                entries_b[slot_part] = copy.deepcopy(val) if isinstance(val, dict) else val
+                keys_to_delete.append(key)
+
+        if not entries_a and not entries_b:
+            self._selected_move_page = None
+            self._apply_move_mode_to_visible_pages()
+            self.refresh_page_minimap()
+            return False
+
+        for k in keys_to_delete:
+            cards_dict.pop(k, None)
+
+        for slot_part, val in entries_a.items():
+            cards_dict[f"{page_b}_{slot_part}"] = val
+        for slot_part, val in entries_b.items():
+            cards_dict[f"{page_a}_{slot_part}"] = val
+
+        self._selected_move_page = None
+        self.save_binder_data()
+        self.update_spread(direction=0)
+        self.update_selection_state()
+        self.actualizar_resumen_precios_binder()
+        self.refresh_page_minimap()
+
+        if entries_a and entries_b:
+            show_toast(f"{t('Hoja')} {page_a + 1} ↔ {t('Hoja')} {page_b + 1} intercambiadas", "info")
+        else:
+            show_toast(f"{t('Hoja')} {page_a + 1} movida a {t('Hoja')} {page_b + 1}", "info")
+        return True
+
     def mostrar_vista_carpetas(self, animate_close=False):
         """Muestra la vista de catálogo/selección de carpetas, con animación 3D de cierre al volver."""
+        if getattr(self, "move_pages_mode", False):
+            self.toggle_move_pages_mode(False)
         from MyQtApp.config import load_settings
         animaciones_activas = load_settings().get("animaciones", True)
 
@@ -661,6 +816,10 @@ class BinderView(QWidget):
         folder = folders[folder_id]
         self.current_mode = folder.get("mode", "3x3")
         self.current_spread_index = 0
+        if getattr(self, "move_pages_mode", False):
+            self.move_pages_mode = False
+            self._selected_move_page = None
+            self._refresh_mover_hojas_btn_style()
         self.update_folder_combo()
         self.aplicar_estilo_carpeta_actual()
         self.update_spread(direction=0)
@@ -853,11 +1012,12 @@ class BinderView(QWidget):
         res = self.calcular_precios_carpeta(folder)
         total_cards = res["total_cards"]
         sources = res["sources"]
+        active_curr = get_active_currency()
 
         self.lbl_binder_price_title.setText(f"{t('Valor del Binder')} ({total_cards} cartas):")
 
         if total_cards == 0:
-            lbl = QLabel("$0.00 USD")
+            lbl = QLabel(format_price(0.0, "USD", target_currency=active_curr, include_code=True))
             lbl.setStyleSheet("font-size: 12px; color: #8c5464; font-weight: 600; border: none; background: transparent;")
             self.binder_prices_pills_layout.addWidget(lbl)
             self.binder_prices_pills_layout.addStretch()
@@ -871,16 +1031,19 @@ class BinderView(QWidget):
             palette = {
                 "TCGPlayer": ("#ecfdf5", "#15803d", "#86efac"),
                 "TCGMatch": ("#eff6ff", "#1d4ed8", "#93c5fd"),
+                "Cardmarket": ("#fef2f2", "#be123c", "#fda4af"),
                 "PokemonTCG": ("#fef3c7", "#b45309", "#fcd34d"),
                 "TCGCSV": ("#f5f3ff", "#6d28d9", "#c4b5fd"),
             }
             for src in ordered_sources:
                 info = sources[src]
                 bg, fg, bd = palette.get(src, ("#f8fafc", "#334155", "#cbd5e1"))
-                if info["moneda"] == "EUR":
-                    txt = f"{src} = €{info['orig']:,.2f} (~${info['usd']:,.2f})"
+                moneda = str(info.get("moneda") or "USD").upper()
+                if moneda == active_curr and info.get("orig", 0) > 0:
+                    val_txt = format_price(info["orig"], moneda, target_currency=active_curr, include_code=True)
                 else:
-                    txt = f"{src} = ${info['usd']:,.2f}"
+                    val_txt = format_price(info["usd"], "USD", target_currency=active_curr, include_code=True)
+                txt = f"{src} = {val_txt}"
                 pill = QLabel(txt)
                 pill.setToolTip(f"{src}: {info['priced_count']}/{total_cards} cartas cotizadas")
                 pill.setStyleSheet(
@@ -890,7 +1053,8 @@ class BinderView(QWidget):
                 self.binder_prices_pills_layout.addWidget(pill)
         else:
             base_usd = res["base_total_usd"]
-            pill = QLabel(f"Mercado Base = ${base_usd:,.2f} USD")
+            base_fmt = format_price(base_usd, "USD", target_currency=active_curr, include_code=True)
+            pill = QLabel(f"Mercado Base = {base_fmt}")
             pill.setToolTip(t("Presiona 'Cotizar Mercado' para comparar precios entre TCGPlayer, TCGMatch y PokemonTCG"))
             pill.setStyleSheet(
                 "background-color: #fff0f3; color: #703043; border: 1px solid #f2a7b7; "
@@ -1038,18 +1202,23 @@ class BinderView(QWidget):
         # Resumen de precio acumulativo de mercado
         price_res = self.calcular_precios_carpeta(f_data)
         src_map = price_res["sources"]
+        active_curr = get_active_currency()
         if src_map:
             parts = []
             for src in PRICE_SOURCE_ORDER:
                 if src in src_map:
                     info = src_map[src]
-                    if info["moneda"] == "EUR":
-                        parts.append(f"{src}: €{info['orig']:,.2f}")
+                    moneda = str(info.get("moneda") or "USD").upper()
+                    if moneda == active_curr and info.get("orig", 0) > 0:
+                        val_txt = format_price(info["orig"], moneda, target_currency=active_curr, include_code=False)
                     else:
-                        parts.append(f"{src}: ${info['usd']:,.2f}")
-            price_summary_txt = " | ".join(parts[:2])
+                        val_txt = format_price(info["usd"], "USD", target_currency=active_curr, include_code=False)
+                    parts.append(f"{src}: {val_txt}")
+            price_summary_txt = f"{' | '.join(parts[:2])} {active_curr}"
         else:
-            price_summary_txt = f"${price_res['base_total_usd']:,.2f} USD"
+            price_summary_txt = format_price(
+                price_res["base_total_usd"], "USD", target_currency=active_curr, include_code=True
+            )
 
         lbl_folder_val = QLabel(price_summary_txt)
         lbl_folder_val.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -2144,6 +2313,9 @@ class BinderView(QWidget):
         self.btn_next.setText(t("Siguiente"))
         self.btn_quitar.setText(t("Quitar") if not self.get_selected_slots() else f"{t('Quitar')} ({len(self.get_selected_slots())})")
         self.lbl_pages.setText(self._format_spread_label(self.current_spread_index))
+        self._refresh_ver_detalles_btn_style()
+        self._refresh_mover_hojas_btn_style()
+        self._apply_move_mode_to_visible_pages()
         if hasattr(self.inventory, 'retranslate_ui'):
             self.inventory.retranslate_ui()
         if hasattr(self, 'btn_back_to_folders'):
@@ -2477,6 +2649,18 @@ class BinderView(QWidget):
             interior_color=interior_color,
         )
         self.populate_page(page_right, p_idx_2, target_mode)
+
+        spread_widget.set_drag_turn_enabled(not getattr(self, "move_pages_mode", False))
+        if isinstance(page_left, BinderPage):
+            page_left.set_move_mode(
+                getattr(self, "move_pages_mode", False),
+                selected=(self._selected_move_page == page_left.page_index),
+            )
+        if isinstance(page_right, BinderPage):
+            page_right.set_move_mode(
+                getattr(self, "move_pages_mode", False),
+                selected=(self._selected_move_page == page_right.page_index),
+            )
 
         spread_widget.spread_layout.addWidget(page_left)
         spread_widget.spread_layout.addWidget(page_right)
@@ -3012,7 +3196,13 @@ class BinderView(QWidget):
                 continue
         cfg = BINDER_MODES.get(self.current_mode, BINDER_MODES["3x3"])
         slots_per_page = cfg["rows"] * cfg["cols"]
-        self.page_minimap.refresh(self.current_spread_index, page_counts, slots_per_page)
+        self.page_minimap.refresh(
+            self.current_spread_index,
+            page_counts,
+            slots_per_page,
+            page_move_mode=getattr(self, "move_pages_mode", False),
+            selected_move_page=getattr(self, "_selected_move_page", None),
+        )
 
     def jump_to_spread(self, target_spread_index: int):
         """Salta directamente a un pliego del mini-mapa usando la animación 3D de giro de página."""

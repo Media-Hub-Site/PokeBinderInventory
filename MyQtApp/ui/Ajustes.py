@@ -1,16 +1,17 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QSlider, QComboBox, QSizePolicy, QFrame, QApplication, QMessageBox,
-    QDialog, QListWidget, QListWidgetItem, QGridLayout, QLineEdit, QFileDialog, QScrollArea
+    QDialog, QListWidget, QListWidgetItem, QGridLayout, QLineEdit, QFileDialog, QScrollArea,
+    QListView
 )
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QFont, QPixmap, QPainter, QPainterPath, QColor, QIcon
+from PyQt6.QtGui import QFont, QPixmap, QPainter, QPainterPath, QColor, QIcon, QPalette
 import os
 import hashlib
 from MyQtApp.config import (
     STYLE_FILE, STYLE_DARK_FILE, load_settings, save_settings,
-    DEFAULT_SETTINGS, get_available_music_tracks, MUSIC_TRACK_NAMES, PROJECT_ROOT,
-    BUNDLE_DIR, EXE_DIR, ICONS_DIR, PERFIL_DIR
+    DEFAULT_SETTINGS, SUPPORTED_CURRENCIES, get_available_music_tracks, MUSIC_TRACK_NAMES,
+    PROJECT_ROOT, BUNDLE_DIR, EXE_DIR, ICONS_DIR, PERFIL_DIR
 )
 from MyQtApp.i18n import t, language_manager
 from MyQtApp.app.backup import create_database_backup, list_backups, restore_database_backup
@@ -618,6 +619,75 @@ def _make_setting_row(label_text: str, control: QWidget, label_width: int = 140)
     return row, lbl
 
 
+def _style_settings_combobox(combo: QComboBox):
+    """Aplica QListView y alto contraste (fondo oscuro #1e293b + texto blanco #ffffff) a un QComboBox en Ajustes."""
+    list_view = QListView(combo)
+    combo.setView(list_view)
+
+    combo.setStyleSheet("""
+        QComboBox {
+            background-color: #1e293b;
+            color: #ffffff;
+            border: 1.5px solid #f29ca4;
+            border-radius: 6px;
+            padding: 2px 10px;
+            font-size: 10pt;
+            font-weight: 600;
+        }
+        QComboBox:disabled {
+            background-color: #334155;
+            color: #94a3b8;
+        }
+        QComboBox::drop-down {
+            border: none;
+            width: 22px;
+        }
+        QComboBox QAbstractItemView {
+            background-color: #1e293b;
+            color: #ffffff;
+            selection-background-color: #f56b7b;
+            selection-color: #ffffff;
+            border: 1.5px solid #f29ca4;
+            border-radius: 6px;
+            padding: 4px;
+            outline: 0px;
+        }
+        QComboBox QAbstractItemView::item {
+            color: #ffffff;
+            background-color: #1e293b;
+            min-height: 26px;
+            padding: 3px 8px;
+        }
+        QComboBox QAbstractItemView::item:selected,
+        QComboBox QAbstractItemView::item:hover {
+            background-color: #f56b7b;
+            color: #ffffff;
+        }
+    """)
+
+    dark_bg = QColor("#1e293b")
+    white_fg = QColor("#ffffff")
+    accent_bg = QColor("#f56b7b")
+
+    for target in (combo, combo.view()):
+        if target is None:
+            continue
+        pal = target.palette()
+        pal.setColor(QPalette.ColorRole.WindowText, white_fg)
+        pal.setColor(QPalette.ColorRole.Text, white_fg)
+        pal.setColor(QPalette.ColorRole.ButtonText, white_fg)
+        pal.setColor(QPalette.ColorRole.Base, dark_bg)
+        pal.setColor(QPalette.ColorRole.Window, dark_bg)
+        pal.setColor(QPalette.ColorRole.Button, dark_bg)
+        pal.setColor(QPalette.ColorRole.Highlight, accent_bg)
+        pal.setColor(QPalette.ColorRole.HighlightedText, white_fg)
+        target.setPalette(pal)
+
+    for i in range(combo.count()):
+        combo.setItemData(i, white_fg, Qt.ItemDataRole.ForegroundRole)
+        combo.setItemData(i, dark_bg, Qt.ItemDataRole.BackgroundRole)
+
+
 def _make_slider_row(label_text: str, icon: str, initial_value: int, callback) -> tuple:
     """Crea fila con ícono + slider + valor y devuelve (row_layout, slider, lbl)."""
     row = QHBoxLayout()
@@ -909,6 +979,7 @@ class AjustesWidget(QWidget):
     animations_toggled = pyqtSignal(bool)
     theme_toggled = pyqtSignal(bool)
     card_size_changed = pyqtSignal(str)
+    currency_changed = pyqtSignal(str)
     logout_requested = pyqtSignal()
     username_changed = pyqtSignal(str)
 
@@ -1205,15 +1276,7 @@ class AjustesWidget(QWidget):
             self.combo_anim_speed.setCurrentIndex(idx_speed)
         self.combo_anim_speed.setFixedHeight(34)
         self.combo_anim_speed.setEnabled(encendido)
-        self.combo_anim_speed.setStyleSheet("""
-            QComboBox {
-                border: 1.5px solid #f29ca4;
-                border-radius: 6px;
-                padding: 2px 8px;
-                font-size: 10pt;
-            }
-            QComboBox::drop-down { border: none; }
-        """)
+        _style_settings_combobox(self.combo_anim_speed)
         self.combo_anim_speed.currentIndexChanged.connect(self.on_anim_speed_changed)
         row_anim_speed, self.lbl_anim_speed = _make_setting_row(t("Ritmo de Animaciones"), self.combo_anim_speed)
         sys_layout.addLayout(row_anim_speed)
@@ -1224,18 +1287,57 @@ class AjustesWidget(QWidget):
         current_lang = self.settings.get("idioma", "Español")
         self.combo_lang.setCurrentText(current_lang)
         self.combo_lang.setFixedHeight(34)
-        self.combo_lang.setStyleSheet("""
-            QComboBox {
+        _style_settings_combobox(self.combo_lang)
+        self.combo_lang.currentIndexChanged.connect(self.on_language_changed)
+        row_lang, self.lbl_idioma = _make_setting_row(t("Idioma"), self.combo_lang)
+        sys_layout.addLayout(row_lang)
+
+        # Fila: Moneda (Issue #66)
+        self.combo_moneda = QComboBox()
+        for code, info in SUPPORTED_CURRENCIES.items():
+            self.combo_moneda.addItem(info["name"], code)
+        current_currency = str(self.settings.get("moneda", "USD") or "USD").upper()
+        idx_curr = self.combo_moneda.findData(current_currency)
+        if idx_curr >= 0:
+            self.combo_moneda.setCurrentIndex(idx_curr)
+        self.combo_moneda.setFixedHeight(34)
+        _style_settings_combobox(self.combo_moneda)
+        self.combo_moneda.currentIndexChanged.connect(self.on_currency_changed)
+        row_moneda, self.lbl_moneda = _make_setting_row(t("Moneda"), self.combo_moneda)
+        sys_layout.addLayout(row_moneda)
+
+        # Fila: API Key opcional de TCGMatch
+        tcgm_wrap = QWidget()
+        tcgm_lay = QHBoxLayout(tcgm_wrap)
+        tcgm_lay.setContentsMargins(0, 0, 0, 0)
+        tcgm_lay.setSpacing(6)
+        self.txt_tcgmatch_key = QLineEdit()
+        self.txt_tcgmatch_key.setEchoMode(QLineEdit.EchoMode.Password)
+        self.txt_tcgmatch_key.setPlaceholderText(t("Opcional (developers.tcgmatch.cl/cuenta)"))
+        self.txt_tcgmatch_key.setText(str(self.settings.get("tcgmatch_api_key", "") or ""))
+        self.txt_tcgmatch_key.setFixedHeight(32)
+        self.txt_tcgmatch_key.setMinimumWidth(210)
+        self.txt_tcgmatch_key.setStyleSheet("""
+            QLineEdit {
                 border: 1.5px solid #f29ca4;
                 border-radius: 6px;
                 padding: 2px 8px;
                 font-size: 10pt;
             }
-            QComboBox::drop-down { border: none; }
         """)
-        self.combo_lang.currentIndexChanged.connect(self.on_language_changed)
-        row_lang, self.lbl_idioma = _make_setting_row(t("Idioma"), self.combo_lang)
-        sys_layout.addLayout(row_lang)
+        self.txt_tcgmatch_key.textChanged.connect(self._on_tcgmatch_key_changed)
+
+        self.btn_toggle_tcgm_key = QPushButton(t("Ver"))
+        self.btn_toggle_tcgm_key.setProperty("class", "pill")
+        self.btn_toggle_tcgm_key.setFixedHeight(32)
+        self.btn_toggle_tcgm_key.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_toggle_tcgm_key.setCheckable(True)
+        self.btn_toggle_tcgm_key.toggled.connect(self._toggle_tcgmatch_key_visibility)
+
+        tcgm_lay.addWidget(self.txt_tcgmatch_key, 1)
+        tcgm_lay.addWidget(self.btn_toggle_tcgm_key)
+        row_tcgm, self.lbl_tcgmatch_key = _make_setting_row(t("API Key TCGMatch"), tcgm_wrap)
+        sys_layout.addLayout(row_tcgm)
 
         cards_layout.addWidget(sys_card)
 
@@ -1392,6 +1494,14 @@ class AjustesWidget(QWidget):
         if hasattr(self, "lbl_anim_speed") and self.lbl_anim_speed:
             self.lbl_anim_speed.setText(t("Ritmo de Animaciones"))
         self.lbl_idioma.setText(t("Idioma"))
+        if hasattr(self, "lbl_moneda") and self.lbl_moneda:
+            self.lbl_moneda.setText(t("Moneda"))
+        if hasattr(self, "lbl_tcgmatch_key") and self.lbl_tcgmatch_key:
+            self.lbl_tcgmatch_key.setText(t("API Key TCGMatch"))
+        if hasattr(self, "txt_tcgmatch_key") and self.txt_tcgmatch_key:
+            self.txt_tcgmatch_key.setPlaceholderText(t("Opcional (developers.tcgmatch.cl/cuenta)"))
+        if hasattr(self, "btn_toggle_tcgm_key") and self.btn_toggle_tcgm_key:
+            self.btn_toggle_tcgm_key.setText(t("Ocultar") if self.btn_toggle_tcgm_key.isChecked() else t("Ver"))
 
         if hasattr(self, 'lbl_sec_db') and self.lbl_sec_db:
             self.lbl_sec_db.setText(f"  🗄️  {t('Base de Datos y Respaldos')}")
@@ -1481,6 +1591,25 @@ class AjustesWidget(QWidget):
         selected_lang = self.combo_lang.currentText()
         language_manager.set_language(selected_lang)
 
+    def on_currency_changed(self, _index):
+        code = self.combo_moneda.currentData()
+        if code and code in SUPPORTED_CURRENCIES:
+            self.settings["moneda"] = code
+            save_settings(self.settings)
+            self.currency_changed.emit(code)
+
+    def _on_tcgmatch_key_changed(self, text: str):
+        self.settings["tcgmatch_api_key"] = str(text or "").strip()
+        save_settings(self.settings)
+
+    def _toggle_tcgmatch_key_visibility(self, checked: bool):
+        if hasattr(self, "txt_tcgmatch_key"):
+            self.txt_tcgmatch_key.setEchoMode(
+                QLineEdit.EchoMode.Normal if checked else QLineEdit.EchoMode.Password
+            )
+        if hasattr(self, "btn_toggle_tcgm_key"):
+            self.btn_toggle_tcgm_key.setText(t("Ocultar") if checked else t("Ver"))
+
     def toggle_card_size(self):
         sizes = ["Pequeño", "Normal", "Grande"]
         current = self.settings.get("tamano_cartas", "Normal")
@@ -1548,6 +1677,11 @@ class AjustesWidget(QWidget):
         for w in (self.slider_musica, self.slider_sonido, self.font_slider, self.combo_lang):
             w.blockSignals(False)
 
+        if hasattr(self, "txt_tcgmatch_key"):
+            self.txt_tcgmatch_key.blockSignals(True)
+            self.txt_tcgmatch_key.setText(str(self.settings.get("tcgmatch_api_key", "") or ""))
+            self.txt_tcgmatch_key.blockSignals(False)
+
         self.btn_tema.setText(t("Tema Claro"))
         self.btn_anim_si.setText(t("SI"))
         self.btn_anim_si.setProperty("class", "pill selected")
@@ -1561,6 +1695,13 @@ class AjustesWidget(QWidget):
             self.combo_anim_speed.setEnabled(True)
             self.combo_anim_speed.blockSignals(False)
 
+        if hasattr(self, "combo_moneda"):
+            self.combo_moneda.blockSignals(True)
+            idx_cur = self.combo_moneda.findData(self.settings.get("moneda", "USD"))
+            if idx_cur >= 0:
+                self.combo_moneda.setCurrentIndex(idx_cur)
+            self.combo_moneda.blockSignals(False)
+
         app = QApplication.instance()
         if app:
             from MyQtApp.config import apply_global_style
@@ -1572,6 +1713,7 @@ class AjustesWidget(QWidget):
         self.animations_toggled.emit(self.settings["animaciones"])
         self.theme_toggled.emit(self.settings["tema_oscuro"])
         self.card_size_changed.emit(self.settings["tamano_cartas"])
+        self.currency_changed.emit(self.settings.get("moneda", "USD"))
         self.retranslate_ui()
 
     def guardar_valores(self):
@@ -1656,9 +1798,11 @@ class AjustesWidget(QWidget):
             return
 
         try:
+            from MyQtApp.app.portable_backup import refresh_main_window_after_import
             counts = import_user_backup_zip(self.usuario, zip_path)
-            # Refrescar vistas principales si existen en la ventana padre
+            # Refrescar vistas principales en vivo en la ventana padre
             win = self.window()
+            refresh_main_window_after_import(win)
             if win:
                 for attr, method in (
                     ("inventario_widget", "actualizar_galeria"),

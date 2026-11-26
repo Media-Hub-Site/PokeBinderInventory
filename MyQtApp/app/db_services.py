@@ -1,3 +1,4 @@
+from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from MyQtApp.session import SessionLocal
 from MyQtApp.models import UsuarioCarta, Cartas, Categoria
@@ -160,6 +161,65 @@ def eliminar_cartas_usuario(usuario_nombre, cartas_info, mode="all"):
         session.close()
 
     return eliminados
+
+
+def actualizar_cantidades_usuario(usuario_nombre: str, cambios: list[dict]) -> tuple[int, int]:
+    """
+    Actualiza las cantidades de cartas existentes en UsuarioCarta.
+    cambios: lista de dicts {'id_api': str, 'idioma': str, 'cantidad': int}.
+    Si cantidad <= 0, elimina la carta de la colección.
+    Retorna (actualizadas, eliminadas).
+    """
+    if not cambios:
+        return 0, 0
+    actualizadas = 0
+    eliminadas = 0
+    session = SessionLocal()
+    try:
+        for item in cambios:
+            carta_id = item.get("id_api")
+            idioma = item.get("idioma")
+            try:
+                new_qty = int(item.get("cantidad", 1))
+            except (TypeError, ValueError):
+                continue
+            if not carta_id:
+                continue
+
+            q = session.query(UsuarioCarta).filter(
+                UsuarioCarta.usuario_nombre == usuario_nombre,
+                UsuarioCarta.carta_id == carta_id,
+            )
+            registro = None
+            if idioma:
+                registro = q.filter(
+                    func.coalesce(UsuarioCarta.idioma, "es") == idioma
+                ).first()
+            if not registro:
+                registro = q.first()
+
+            if not registro:
+                continue
+
+            if new_qty <= 0:
+                session.query(UsuarioCarta).filter(UsuarioCarta.id == registro.id).delete()
+                eliminadas += 1
+            else:
+                new_qty = min(99, new_qty)
+                if int(getattr(registro, "cantidad", 1) or 1) != new_qty:
+                    registro.cantidad = new_qty
+                    actualizadas += 1
+
+        session.commit()
+    except Exception as e:
+        print(f"Error al actualizar cantidades: {e}")
+        session.rollback()
+        return 0, 0
+    finally:
+        session.close()
+
+    return actualizadas, eliminadas
+
 
 def obtener_cartas_usuario(usuario_nombre):
     """

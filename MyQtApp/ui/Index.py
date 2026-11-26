@@ -280,17 +280,37 @@ class MainWindow(QWidget):
         bottom_layout.addWidget(view_buttons, 0, Qt.AlignmentFlag.AlignLeft)
         bottom_layout.addItem(QSpacerItem(10, 10, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum))
 
-        # Botones contextuales en la barra inferior (Agregar / Eliminar / Vaciar)
+        # Botones contextuales en la barra inferior (Agregar / Guardar / Eliminar / Vaciar)
         self.btn_agregar = BotonConSonido(t("Agregar"))
+        self.btn_guardar_cantidades = BotonConSonido(t("Guardar"))
         self.btn_eliminar = BotonConSonido(t("Eliminar"))
         self.btn_vaciar = BotonConSonido(t("Vaciar"))
 
-        for btn in (self.btn_agregar, self.btn_eliminar, self.btn_vaciar):
+        for btn in (self.btn_agregar, self.btn_guardar_cantidades, self.btn_eliminar, self.btn_vaciar):
             btn.setFixedHeight(40)
-            btn.setMinimumWidth(160)
+            btn.setMinimumWidth(150)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.setProperty("class", "ActionSecondary")
             bottom_layout.addWidget(btn, 0, Qt.AlignmentFlag.AlignRight)
+
+        self.btn_guardar_cantidades.setStyleSheet("""
+            QPushButton {
+                background-color: #10b981;
+                color: #ffffff;
+                border: 2px solid #059669;
+                border-radius: 12px;
+                font-weight: 700;
+                padding: 4px 18px;
+            }
+            QPushButton:hover {
+                background-color: #059669;
+                border-color: #047857;
+            }
+            QPushButton:pressed {
+                background-color: #047857;
+            }
+        """)
+        self.btn_guardar_cantidades.setVisible(False)
 
         content_layout.addWidget(bottom_bar)
 
@@ -305,8 +325,12 @@ class MainWindow(QWidget):
         self.btn_ajustes.clicked.connect(lambda: self.animar_transicion(5))
         self.btn_salir.clicked.connect(self.confirmar_salir)
         self.btn_agregar.clicked.connect(self.agregar_cartas)
+        self.btn_guardar_cantidades.clicked.connect(self.guardar_cantidades_coleccion)
         self.btn_eliminar.clicked.connect(self.eliminar_cartas)
         self.btn_vaciar.clicked.connect(self.vaciar_binder)
+        inv_view = self.paginas.widget(2)
+        if hasattr(inv_view, "pending_qty_changes_changed"):
+            inv_view.pending_qty_changes_changed.connect(self._on_inventario_qty_changes)
         self.btn_view_grid.clicked.connect(lambda: self._cambiar_vista_cartas("grid"))
         self.btn_view_list.clicked.connect(lambda: self._cambiar_vista_cartas("list"))
 
@@ -315,6 +339,8 @@ class MainWindow(QWidget):
         ajustes.music_track_changed.connect(self.cambiar_musica)
         ajustes.animations_toggled.connect(self.toggle_animaciones)
         ajustes.card_size_changed.connect(self.actualizar_tamano_cartas)
+        if hasattr(ajustes, 'currency_changed'):
+            ajustes.currency_changed.connect(self.actualizar_moneda_vistas)
         if hasattr(ajustes, 'logout_requested'):
             ajustes.logout_requested.connect(self.cambiar_cuenta)
         if hasattr(ajustes, 'username_changed'):
@@ -356,6 +382,8 @@ class MainWindow(QWidget):
         self.btn_print.setText(t("Print"))
         self.btn_ajustes.setText(t("Ajustes"))
         self.btn_agregar.setText(t("Agregar"))
+        if hasattr(self, "btn_guardar_cantidades"):
+            self.btn_guardar_cantidades.setText(t("Guardar"))
         self.btn_eliminar.setText(t("Eliminar"))
         self.btn_vaciar.setText(t("Vaciar"))
         self.btn_salir.setText(t("Salir"))
@@ -408,6 +436,31 @@ class MainWindow(QWidget):
                 mazos.cargar_coleccion_navegador()
         except Exception as e:
             print(f"Error actualizando mazos: {e}")
+
+    def actualizar_moneda_vistas(self, _moneda=None):
+        """Refresca los precios mostrados en Buscar, Colecciones y Binder al cambiar la moneda en Ajustes."""
+        try:
+            galeria = self.paginas.widget(0)
+            if hasattr(galeria, "actualizar_galeria"):
+                galeria.actualizar_galeria()
+        except Exception as e:
+            print(f"Error actualizando moneda en galeria: {e}")
+        try:
+            inventario = self.paginas.widget(2)
+            if hasattr(inventario, "actualizar_valor_total"):
+                inventario.actualizar_valor_total()
+            if hasattr(inventario, "actualizar_galeria"):
+                inventario.actualizar_galeria()
+        except Exception as e:
+            print(f"Error actualizando moneda en inventario: {e}")
+        try:
+            binder = self.paginas.widget(1)
+            if hasattr(binder, "actualizar_resumen_precios_binder"):
+                binder.actualizar_resumen_precios_binder()
+            if hasattr(binder, "render_folders_grid"):
+                binder.render_folders_grid()
+        except Exception as e:
+            print(f"Error actualizando moneda en binder: {e}")
 
     def _cancel_section_transition(self):
         ov = getattr(self, "_section_fade_overlay", None)
@@ -528,6 +581,14 @@ class MainWindow(QWidget):
             self._update_nav_active_state(indice)
             self._sync_view_mode_buttons(indice)
             self.btn_agregar.setVisible(indice == 0)
+            inv_widget = self.paginas.widget(2)
+            has_qty_changes = (
+                bool(inv_widget.has_pending_quantity_changes())
+                if hasattr(inv_widget, "has_pending_quantity_changes")
+                else False
+            )
+            if hasattr(self, "btn_guardar_cantidades"):
+                self.btn_guardar_cantidades.setVisible(indice == 2 and has_qty_changes)
             self.btn_eliminar.setVisible(indice == 2)
             
             # El botón vaciar solo debe aparecer dentro de una carpeta del binder
@@ -737,6 +798,25 @@ class MainWindow(QWidget):
         if cerrar and resultado == QMessageBox.StandardButton.Yes:
             self.close()
 
+    def _on_inventario_qty_changes(self, has_changes: bool):
+        """Muestra u oculta el botón Guardar en la barra inferior solo cuando hay cambios en cantidades."""
+        if hasattr(self, "btn_guardar_cantidades"):
+            self.btn_guardar_cantidades.setVisible(self.paginas.currentIndex() == 2 and bool(has_changes))
+
+    def guardar_cantidades_coleccion(self):
+        """Persiste en BD las cantidades modificadas desde la vista Colecciones y refresca Binder."""
+        inventario = self.paginas.widget(2)
+        if not inventario or not hasattr(inventario, "guardar_cambios_cantidad"):
+            return
+        act, elim = inventario.guardar_cambios_cantidad()
+        if act or elim:
+            try:
+                binder = self.paginas.widget(1)
+                if hasattr(binder, "refresh_inventory"):
+                    binder.refresh_inventory()
+            except Exception as e:
+                print(f"Error refrescando binder tras guardar cantidades: {e}")
+
     def eliminar_cartas(self):
         try:
             inventario = self.paginas.widget(2)
@@ -793,6 +873,12 @@ class MainWindow(QWidget):
         eliminados = eliminar_cartas_usuario(self.usuario, cartas, mode=delete_mode)
 
         if eliminados:
+            if hasattr(inventario, "clear_pending_quantities"):
+                del_keys = [
+                    f"{c.get('id_api')}:{c.get('idioma') or language_manager.current_language}"
+                    for c in cartas if isinstance(c, dict) and c.get("id_api")
+                ]
+                inventario.clear_pending_quantities(del_keys)
             if hasattr(inventario, 'limpiar_seleccion'):
                 inventario.limpiar_seleccion()
             self.mostrar_mensaje(f"Se han eliminado {eliminados} copia(s) de tu inventario.")

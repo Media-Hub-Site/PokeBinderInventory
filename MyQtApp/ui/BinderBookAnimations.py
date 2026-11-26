@@ -1,13 +1,13 @@
 import math
 import os
-from PyQt6.QtWidgets import QWidget, QHBoxLayout
+from PyQt6.QtWidgets import QWidget, QHBoxLayout, QApplication
 from PyQt6.QtCore import (
     Qt, QRect, QRectF, QPoint, QPointF, QVariantAnimation,
-    QEasingCurve, pyqtSignal, QUrl
+    QEasingCurve, pyqtSignal, QUrl, QMimeData
 )
 from PyQt6.QtGui import (
     QPainter, QPainterPath, QColor, QLinearGradient, QRadialGradient,
-    QPen, QBrush, QPixmap, QPolygonF, QTransform, QRegion
+    QPen, QBrush, QPixmap, QPolygonF, QTransform, QRegion, QDrag
 )
 
 try:
@@ -249,12 +249,20 @@ class BinderSpreadFrame(QWidget):
         self._hover_corner = None
         self._dragging_turn = False
         self._drag_direction = 0
+        self._drag_turn_enabled = True
         self.setMouseTracking(True)
 
         self.spread_layout = QHBoxLayout(self)
         self.spread_layout.setSpacing(44)
         self.spread_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.spread_layout.setContentsMargins(24, 18, 24, 18)
+
+    def set_drag_turn_enabled(self, enabled: bool):
+        self._drag_turn_enabled = bool(enabled)
+        if not self._drag_turn_enabled and self._hover_corner is not None:
+            self._hover_corner = None
+            self.unsetCursor()
+            self.update()
 
     def set_theme(self, design: str, color: str = "auto", interior_color: str = None):
         self.base_color, self.spine_color, self.accent_color = resolve_binder_palette(design, color)
@@ -313,6 +321,10 @@ class BinderSpreadFrame(QWidget):
             event.accept()
             return
 
+        if not getattr(self, "_drag_turn_enabled", True):
+            super().mouseMoveEvent(event)
+            return
+
         zone = self._detect_edge_zone(event.position().toPoint())
         if zone != self._hover_corner:
             self._hover_corner = zone
@@ -331,7 +343,7 @@ class BinderSpreadFrame(QWidget):
         super().leaveEvent(event)
 
     def mousePressEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
+        if event.button() == Qt.MouseButton.LeftButton and getattr(self, "_drag_turn_enabled", True):
             zone = self._detect_edge_zone(event.position().toPoint())
             if zone == "right":
                 self._dragging_turn = True
@@ -1215,18 +1227,165 @@ class _SpreadMinimapPill(QWidget):
                 painter.drawRoundedRect(QRectF(bx, bar_y, max(3.0, bar_w * ratio), 3.0), 1.5, 1.5)
 
 
+_MINIMAP_PAGE_MIME = "application/x-pokebinder-page"
+
+
+class _SinglePageMovePill(QWidget):
+    """Miniatura individual de una hoja (H1, H2, ...) para arrastrar o intercambiar hojas en modo Mover."""
+    clicked = pyqtSignal(int)
+    swap_requested = pyqtSignal(int, int)
+
+    def __init__(self, page_idx: int, fill_ratio: float, is_visible: bool, is_selected: bool, parent=None):
+        super().__init__(parent)
+        self.page_idx = int(page_idx)
+        self.fill_ratio = max(0.0, min(1.0, float(fill_ratio)))
+        self.is_visible = bool(is_visible)
+        self.is_selected = bool(is_selected)
+        self._hovered = False
+        self._drop_hover = False
+        self._drag_start = None
+
+        self.setFixedSize(46, 28)
+        self.setAcceptDrops(True)
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
+        self.setToolTip(f"Hoja {self.page_idx + 1} — Arrastra sobre otra hoja o haz clic para intercambiar")
+
+    def enterEvent(self, event):
+        self._hovered = True
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._hovered = False
+        self.update()
+        super().leaveEvent(event)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_start = event.position().toPoint()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if not (event.buttons() & Qt.MouseButton.LeftButton):
+            return
+        if self._drag_start is not None and (event.position().toPoint() - self._drag_start).manhattanLength() >= QApplication.startDragDistance():
+            self._drag_start = None
+            drag = QDrag(self)
+            mime = QMimeData()
+            mime.setData(_MINIMAP_PAGE_MIME, str(self.page_idx).encode("utf-8"))
+            drag.setMimeData(mime)
+            pix = self.grab()
+            if not pix.isNull():
+                drag.setPixmap(pix)
+                drag.setHotSpot(QPoint(pix.width() // 2, pix.height() // 2))
+            drag.exec(Qt.DropAction.MoveAction)
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self._drag_start is not None:
+            self._drag_start = None
+            self.clicked.emit(self.page_idx)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasFormat(_MINIMAP_PAGE_MIME):
+            self._drop_hover = True
+            self.update()
+            event.acceptProposedAction()
+            return
+        event.ignore()
+
+    def dragLeaveEvent(self, event):
+        self._drop_hover = False
+        self.update()
+        super().dragLeaveEvent(event)
+
+    def dropEvent(self, event):
+        self._drop_hover = False
+        self.update()
+        if event.mimeData().hasFormat(_MINIMAP_PAGE_MIME):
+            try:
+                src_page = int(bytes(event.mimeData().data(_MINIMAP_PAGE_MIME)).decode("utf-8"))
+            except Exception:
+                event.ignore()
+                return
+            if src_page != self.page_idx:
+                self.swap_requested.emit(src_page, self.page_idx)
+            event.acceptProposedAction()
+            return
+        event.ignore()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        rect = QRectF(0.8, 0.8, self.width() - 1.6, self.height() - 1.6)
+
+        if self._drop_hover:
+            bg = QColor("#e0f2fe")
+            border = QColor("#0284c7")
+            txt_col = QColor("#0369a1")
+        elif self.is_selected:
+            bg = QColor("#f59e0b")
+            border = QColor("#b45309")
+            txt_col = QColor("#ffffff")
+        elif self.is_visible:
+            bg = QColor("#38bdf8")
+            border = QColor("#0284c7")
+            txt_col = QColor("#ffffff")
+        elif self._hovered:
+            bg = QColor("#e0f2fe")
+            border = QColor("#38bdf8")
+            txt_col = QColor("#0f172a")
+        else:
+            bg = QColor("#ffffff")
+            border = QColor("#94a3b8")
+            txt_col = QColor("#334155")
+
+        painter.setBrush(bg)
+        painter.setPen(QPen(border, 1.8 if (self.is_selected or self._drop_hover or self.is_visible) else 1.0))
+        painter.drawRoundedRect(rect, 7.0, 7.0)
+
+        painter.setPen(txt_col)
+        font = painter.font()
+        font.setPointSize(8)
+        font.setBold(self.is_visible or self.is_selected)
+        painter.setFont(font)
+        painter.drawText(QRectF(2, 1, self.width() - 4, 16), Qt.AlignmentFlag.AlignCenter, f"H{self.page_idx + 1}")
+
+        # Barra de ocupación de la hoja
+        bar_y = self.height() - 6.0
+        bar_w = self.width() - 10.0
+        bx = 5.0
+        track_col = QColor(255, 255, 255, 90) if (self.is_visible or self.is_selected) else QColor("#e2e8f0")
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(track_col)
+        painter.drawRoundedRect(QRectF(bx, bar_y, bar_w, 3.0), 1.5, 1.5)
+        if self.fill_ratio > 0.0:
+            fill_col = QColor("#fef08a") if (self.is_visible or self.is_selected) else QColor("#0284c7")
+            painter.setBrush(fill_col)
+            painter.drawRoundedRect(QRectF(bx, bar_y, max(3.0, bar_w * self.fill_ratio), 3.0), 1.5, 1.5)
+
+
 class BinderPageMinimap(QWidget):
     """
     Tira compacta horizontal de salto rápido de páginas para el Binder (Etapa 3).
-    Muestra mini-pliegos con indicador de ocupación de cartas y permite saltar directo con animación 3D.
+    Muestra mini-pliegos con indicador de ocupación de cartas y permite saltar directo con animación 3D,
+    o en modo mover hojas muestra H1, H2, ... para arrastrar e intercambiar hojas completas.
     """
     spread_selected = pyqtSignal(int)
+    page_swap_requested = pyqtSignal(int, int)
+    page_move_clicked = pyqtSignal(int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedHeight(34)
 
-        from PyQt6.QtWidgets import QScrollArea, QLabel
+        from PyQt6.QtWidgets import QScrollArea
         outer = QHBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(6)
@@ -1248,17 +1407,46 @@ class BinderPageMinimap(QWidget):
 
         outer.addWidget(self.scroll, 1)
 
-    def refresh(self, current_spread: int, page_counts: dict[int, int], slots_per_page: int):
-        """Reconstruye las miniaturas de pliegos según ocupación actual."""
+    def refresh(
+        self,
+        current_spread: int,
+        page_counts: dict[int, int],
+        slots_per_page: int,
+        page_move_mode: bool = False,
+        selected_move_page: int | None = None,
+    ):
+        """Reconstruye las miniaturas de pliegos u hojas individuales según ocupación actual."""
         while self._pills_layout.count():
             item = self._pills_layout.takeAt(0)
             if item and item.widget():
                 item.widget().deleteLater()
 
         max_occupied_page = max(page_counts.keys()) if page_counts else 0
+        denom = max(1, int(slots_per_page))
+
+        if page_move_mode:
+            visible_pages = {0} if current_spread <= 0 else {current_spread * 2 - 1, current_spread * 2}
+            total_pages = max(12, max_occupied_page + 4, max(visible_pages) + 2)
+            active_pill = None
+            for p_idx in range(total_pages):
+                ratio = page_counts.get(p_idx, 0) / denom
+                pill = _SinglePageMovePill(
+                    p_idx,
+                    ratio,
+                    is_visible=(p_idx in visible_pages),
+                    is_selected=(selected_move_page == p_idx),
+                )
+                pill.clicked.connect(self.page_move_clicked.emit)
+                pill.swap_requested.connect(self.page_swap_requested.emit)
+                self._pills_layout.addWidget(pill)
+                if p_idx in visible_pages and active_pill is None:
+                    active_pill = pill
+            if active_pill is not None:
+                self.scroll.ensureWidgetVisible(active_pill, 40, 0)
+            return
+
         max_occupied_spread = 0 if max_occupied_page == 0 else (max_occupied_page + 1) // 2
         total_spreads = max(6, current_spread + 2, max_occupied_spread + 2)
-        denom = max(1, int(slots_per_page))
 
         active_pill = None
         for s_idx in range(total_spreads):

@@ -2,7 +2,7 @@ from PyQt6.QtWidgets import (
     QWidget, QLabel, QVBoxLayout, QScrollArea, QGridLayout,
     QHBoxLayout, QLineEdit, QComboBox, QPushButton, QGraphicsOpacityEffect,
     QSizePolicy, QDialog, QInputDialog, QMessageBox, QFrame, QMenu,
-    QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView
+    QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView, QSpinBox
 )
 from PyQt6.QtGui import QPixmap, QAction, QColor, QPalette
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QPropertyAnimation, QUrl, QEasingCurve, QPoint
@@ -15,6 +15,8 @@ from ..app.getImgs import (
     get_pixmap_from_zip, get_webp_pixmap, get_card_placeholder_pixmap,
     CardImageLoaderManager
 )
+from MyQtApp.app.filtro import sort_filter_values, format_filter_option_label
+from MyQtApp.app.price_updater import format_price, get_active_currency
 from MyQtApp.ui.CardWidget import ClickableLabel, CardItemWidget, VariantLegendBar, CardZoomOverlay
 from MyQtApp.ui.FilterVisualBar import EnergyTypeFilterBar
 from MyQtApp.ui.toast import show_toast
@@ -25,6 +27,7 @@ from MyQtApp.i18n import t, language_manager
 
 class GaleriaCartasInventario(QWidget):
     CARTAS_POR_PAGINA = 30
+    pending_qty_changes_changed = pyqtSignal(bool)
 
     def __init__(self, path_imagenes, nombre_usuario):
         super().__init__()
@@ -35,6 +38,8 @@ class GaleriaCartasInventario(QWidget):
         self.card_widgets_por_key = {}
         self._current_card_size = (120, 170)
         self.cartas_seleccionadas = set()
+        self._original_quantities: dict[str, int] = {}
+        self._pending_quantities: dict[str, int] = {}
         self.carpeta_activa = None
         self.current_page = 0
         self.total_cartas = 0
@@ -71,7 +76,7 @@ class GaleriaCartasInventario(QWidget):
         self.btn_limpiar.clicked.connect(self.limpiar_filtros)
         row1.addWidget(self.btn_limpiar)
 
-        self.lbl_valor_total = QLabel(f"{t('Valor Inventario')} $0.00 USD")
+        self.lbl_valor_total = QLabel(f"{t('Valor Inventario')} {format_price(0.0, 'USD', include_code=True)}")
         self.lbl_valor_total.setProperty("class", "ValorTotalLabel")
         row1.addWidget(self.lbl_valor_total)
 
@@ -94,17 +99,17 @@ class GaleriaCartasInventario(QWidget):
 
         self.filtros = {}
         campos = {
-            "Rareza": "rarity",
             "Tipo": "type",
-            "Edición": "edition",
             "Etapa": "stage",
+            "Rule Box": "especial_type",
             "Entrenador": "trainer",
-            "Especial": "especial_type"
+            "Rareza": "rarity",
+            "Edición": "edition"
         }
 
         for etiqueta, columna in campos.items():
             combo = QComboBox()
-            combo.addItem(f"{t(etiqueta)}: {t('Todos')}")
+            combo.addItem(f"{t(etiqueta)}: {t('Todos')}", None)
             combo.setProperty("class", "FilterCombo")
             combo.currentIndexChanged.connect(self.reset_page_and_actualizar)
             self.filtros[columna] = combo
@@ -217,7 +222,8 @@ class GaleriaCartasInventario(QWidget):
         self.list_table.setColumnCount(10)
         self.list_table.setHorizontalHeaderLabels([
             t("#Dex"), t("Nombre"), t("Tipo"), t("Generación"),
-            t("Rareza"), t("Variante"), t("Edición"), t("Idioma"), t("Copias"), t("Precio (USD)")
+            t("Rareza"), t("Variante"), t("Edición"), t("Idioma"),
+            t("Copias"), f"{t('Precio')} ({get_active_currency()})"
         ])
         self.list_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.list_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -292,16 +298,27 @@ class GaleriaCartasInventario(QWidget):
 
     # ✅ SQLAlchemy: cargar combos
     def cargar_filtros(self):
+        curr_lang = language_manager.current_language
         for columna, combo in self.filtros.items():
+            prev_val = self._get_filter_value(combo)
+            combo.blockSignals(True)
+            while combo.count() > 1:
+                combo.removeItem(1)
             valores = (
                 self.session.query(getattr(Cartas, columna))
                 .filter(getattr(Cartas, columna).isnot(None))
                 .distinct()
                 .all()
             )
-            valores = sorted(v[0] for v in valores if v[0])
-            for val in valores:
-                combo.addItem(val)
+            for raw_val in sort_filter_values(columna, valores):
+                display_txt = format_filter_option_label(columna, raw_val, curr_lang)
+                combo.addItem(display_txt, raw_val)
+            if prev_val:
+                idx = combo.findData(prev_val)
+                if idx < 0:
+                    idx = combo.findText(prev_val, Qt.MatchFlag.MatchFixedString)
+                combo.setCurrentIndex(idx if idx >= 0 else 0)
+            combo.blockSignals(False)
 
         self.cargar_categorias_combo()
 
@@ -593,6 +610,11 @@ class GaleriaCartasInventario(QWidget):
                 return
             from MyQtApp.app.db_services import eliminar_cartas_usuario
             eliminados = eliminar_cartas_usuario(self.nombre_usuario, cartas)
+            deleted_keys = [
+                f"{c.get('id_api')}:{c.get('idioma') or language_manager.current_language}"
+                for c in cartas if isinstance(c, dict) and c.get("id_api")
+            ]
+            self.clear_pending_quantities(deleted_keys)
             self.limpiar_seleccion()
             self.actualizar_valor_total()
             self.reset_page_and_actualizar()
@@ -794,7 +816,10 @@ class GaleriaCartasInventario(QWidget):
     def _get_filter_value(self, combo):
         if combo.currentIndex() <= 0:
             return None
-        return combo.currentText().strip()
+        data = combo.currentData()
+        if data is not None:
+            return str(data).strip() or None
+        return combo.currentText().strip() or None
 
     # ✅ SQLAlchemy conteo
     def actualizar_total_cartas(self):
@@ -854,6 +879,7 @@ class GaleriaCartasInventario(QWidget):
         if hasattr(self, "energy_bar"):
             self.energy_bar.set_active_zoom(tam)
 
+        self.session.expire_all()
         q = self.session.query(Cartas, UsuarioCarta.variante, UsuarioCarta.cantidad).join(
             UsuarioCarta,
             and_(
@@ -936,15 +962,23 @@ class GaleriaCartasInventario(QWidget):
                 needs_download = True
 
             owned_qty = max(1, int(cantidad_db or 1))
-            card_widget = CardItemWidget(carta, pixmap, size, variante=variante_db or "Normal", owned_qty=owned_qty)
+            self._original_quantities[card_key] = owned_qty
+            is_modified = card_key in self._pending_quantities
+            effective_qty = self._pending_quantities.get(card_key, owned_qty)
+            card_widget = CardItemWidget(carta, pixmap, size, variante=variante_db or "Normal", owned_qty=effective_qty)
             card_widget.image_label.card_key = card_key
             card_widget.image_label.clicked.connect(self.seleccionar_carta)
+            card_widget.copy_qty_changed.connect(self._on_card_copy_qty_changed)
             card_widget.variant_badge.variant_changed.connect(self.cambiar_variante_carta)
+            if is_modified:
+                card_widget.update_owned_badge(effective_qty, modified=True)
 
             if card_key in self.cartas_seleccionadas:
                 card_widget.image_label.setStyleSheet("border: 2.5px solid #00cccc; border-radius: 6px; background-color: rgba(0, 255, 200, 0.25);")
+                card_widget.set_selection_stepper(True, effective_qty, min_qty=0)
             else:
                 card_widget.image_label.setStyleSheet("border: none; background-color: transparent;")
+                card_widget.set_selection_stepper(False, effective_qty, min_qty=0)
 
             self.labels_por_id.setdefault(card_key, []).append(card_widget.image_label)
             self.card_widgets_por_key.setdefault(card_key, []).append(card_widget)
@@ -979,9 +1013,13 @@ class GaleriaCartasInventario(QWidget):
         if not type_val:
             combo.setCurrentIndex(0)
         else:
-            idx = combo.findText(type_val, Qt.MatchFlag.MatchFixedString)
+            idx = combo.findData(type_val)
+            if idx < 0:
+                idx = combo.findText(type_val, Qt.MatchFlag.MatchFixedString)
             if idx < 0 and type_val == "Lightning":
-                idx = combo.findText("Electric", Qt.MatchFlag.MatchFixedString)
+                idx = combo.findData("Electric")
+                if idx < 0:
+                    idx = combo.findText("Electric", Qt.MatchFlag.MatchFixedString)
             combo.setCurrentIndex(idx if idx >= 0 else 0)
         combo.blockSignals(False)
         self.reset_page_and_actualizar()
@@ -1003,13 +1041,19 @@ class GaleriaCartasInventario(QWidget):
 
     def _populate_list_table(self, cartas_tuples):
         self.list_table.blockSignals(True)
+        self.list_table.setHorizontalHeaderItem(
+            9, QTableWidgetItem(f"{t('Precio')} ({get_active_currency()})")
+        )
         self.list_table.setRowCount(len(cartas_tuples))
         for r_idx, (carta, variante_db, cantidad_db) in enumerate(cartas_tuples):
             card_lang = carta.idioma or language_manager.current_language
             card_key = f"{carta.id_api}:{card_lang}"
+            owned_qty = max(1, int(cantidad_db or 1))
+            self._original_quantities[card_key] = owned_qty
+            effective_qty = self._pending_quantities.get(card_key, owned_qty)
+
             dex_txt = f"#{carta.pokedex_id:04d}" if getattr(carta, "pokedex_id", None) else "-"
-            price_val = f"${float(carta.price):,.2f}" if carta.price else "-"
-            qty_val = f"x{max(1, int(cantidad_db or 1))}"
+            price_val = format_price(float(carta.price), "USD", include_code=False) if carta.price else "-"
             vals = [
                 dex_txt,
                 carta.nombre or "",
@@ -1019,16 +1063,26 @@ class GaleriaCartasInventario(QWidget):
                 variante_db or "Normal",
                 carta.edition or carta.set_name or "-",
                 (card_lang or "").upper(),
-                qty_val,
+                "",
                 price_val,
             ]
             for c_idx, txt in enumerate(vals):
+                if c_idx == 8:
+                    continue
                 item = QTableWidgetItem(txt)
                 if c_idx == 0:
                     item.setData(Qt.ItemDataRole.UserRole, card_key)
-                if c_idx in (0, 7, 8, 9):
+                if c_idx in (0, 7, 9):
                     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.list_table.setItem(r_idx, c_idx, item)
+
+            spin = QSpinBox(self.list_table)
+            spin.setRange(0, 99)
+            spin.setValue(effective_qty)
+            spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            spin.valueChanged.connect(lambda val, ck=card_key: self._on_card_copy_qty_changed(ck, val))
+            self.list_table.setCellWidget(r_idx, 8, spin)
+
             if card_key in self.cartas_seleccionadas:
                 self.list_table.selectRow(r_idx)
         self.list_table.blockSignals(False)
@@ -1067,8 +1121,7 @@ class GaleriaCartasInventario(QWidget):
         """Sincroniza la barra visual de energías cuando cambia el QComboBox de Tipo."""
         combo = self.filtros.get("type")
         if combo and hasattr(self, "energy_bar"):
-            val = combo.currentText() if combo.currentIndex() > 0 else None
-            self.energy_bar.set_active_type(val)
+            self.energy_bar.set_active_type(self._get_filter_value(combo))
 
     def _on_zoom_changed(self, size_key: str):
         """Aplica inmediatamente la escala seleccionada (Pequeño / Normal / Grande)."""
@@ -1118,13 +1171,39 @@ class GaleriaCartasInventario(QWidget):
         self.lbl_pagina.setText(f"{t('Página')} {self.current_page + 1} {t('de')} {total_pages}")
         self.actualizar_valor_total()
 
-        campos_labels = [("Rareza", "rarity"), ("Tipo", "type"), ("Edición", "edition"),
-                         ("Etapa", "stage"), ("Entrenador", "trainer"), ("Especial", "especial_type")]
+        curr_lang = language_manager.current_language
+        campos_labels = [
+            ("Tipo", "type"),
+            ("Etapa", "stage"),
+            ("Rule Box", "especial_type"),
+            ("Entrenador", "trainer"),
+            ("Rareza", "rarity"),
+            ("Edición", "edition"),
+        ]
         for etiqueta, columna in campos_labels:
             if columna in self.filtros:
                 cb = self.filtros[columna]
+                selected_data = self._get_filter_value(cb)
+                cb.blockSignals(True)
                 if cb.count() > 0:
                     cb.setItemText(0, f"{t(etiqueta)}: {t('Todos')}")
+                for i in range(1, cb.count()):
+                    raw_val = cb.itemData(i)
+                    if raw_val is not None:
+                        cb.setItemText(i, format_filter_option_label(columna, raw_val, curr_lang))
+                if selected_data is not None:
+                    idx = cb.findData(selected_data)
+                    if idx < 0:
+                        idx = cb.findText(selected_data, Qt.MatchFlag.MatchFixedString)
+                    cb.setCurrentIndex(idx if idx >= 0 else 0)
+                cb.blockSignals(False)
+
+        if hasattr(self, "combo_idioma") and self.combo_idioma.count() > 0:
+            self.combo_idioma.setItemText(0, f"{t('Idioma')}: {t('Todos')}")
+        if hasattr(self, "list_table"):
+            self.list_table.setHorizontalHeaderItem(
+                9, QTableWidgetItem(f"{t('Precio')} ({get_active_currency()})")
+            )
 
     def pagina_anterior(self):
         if self.current_page > 0:
@@ -1147,6 +1226,108 @@ class GaleriaCartasInventario(QWidget):
             self.sonido_pagina.setVolume(vol)
             self.sonido_pagina.play()
 
+    def _sync_steppers_for_key(self, card_key: str):
+        is_sel = card_key in self.cartas_seleccionadas
+        orig = self._original_quantities.get(card_key, 1)
+        qty = self._pending_quantities.get(card_key, orig)
+        is_modified = card_key in self._pending_quantities
+        for cw in self.card_widgets_por_key.get(card_key, []):
+            try:
+                cw.set_selection_stepper(is_sel, qty, min_qty=0)
+                cw.update_owned_badge(qty, modified=is_modified)
+            except RuntimeError:
+                pass
+
+    def _on_card_copy_qty_changed(self, card_key: str, qty: int):
+        qty_clean = max(0, min(99, int(qty)))
+        orig = self._original_quantities.get(card_key, 1)
+        if qty_clean == orig:
+            self._pending_quantities.pop(card_key, None)
+        else:
+            self._pending_quantities[card_key] = qty_clean
+
+        is_modified = card_key in self._pending_quantities
+        is_sel = card_key in self.cartas_seleccionadas
+        for cw in self.card_widgets_por_key.get(card_key, []):
+            try:
+                cw.set_selection_stepper(is_sel, qty_clean, min_qty=0)
+                cw.update_owned_badge(qty_clean, modified=is_modified)
+            except RuntimeError:
+                pass
+
+        if self._view_mode == "list" and hasattr(self, "list_table"):
+            for r in range(self.list_table.rowCount()):
+                it = self.list_table.item(r, 0)
+                spin = self.list_table.cellWidget(r, 8)
+                if it and spin is not None and it.data(Qt.ItemDataRole.UserRole) == card_key:
+                    if spin.value() != qty_clean:
+                        spin.blockSignals(True)
+                        spin.setValue(qty_clean)
+                        spin.blockSignals(False)
+
+        self.pending_qty_changes_changed.emit(bool(self._pending_quantities))
+
+    def has_pending_quantity_changes(self) -> bool:
+        return bool(self._pending_quantities)
+
+    def clear_pending_quantities(self, keys=None):
+        if keys is None:
+            self._pending_quantities.clear()
+        else:
+            for k in keys:
+                self._pending_quantities.pop(k, None)
+        self.pending_qty_changes_changed.emit(bool(self._pending_quantities))
+
+    def guardar_cambios_cantidad(self) -> tuple[int, int]:
+        """Guarda en BD las cantidades modificadas en la colección (elimina si cantidad == 0)."""
+        if not self._pending_quantities:
+            return 0, 0
+
+        cambios = []
+        zero_count = 0
+        for card_key, new_qty in self._pending_quantities.items():
+            if ":" in card_key:
+                id_api, lang = card_key.split(":", 1)
+            else:
+                id_api, lang = card_key, language_manager.current_language
+            if int(new_qty) <= 0:
+                zero_count += 1
+            cambios.append({
+                "id_api": id_api,
+                "idioma": lang,
+                "cantidad": max(0, int(new_qty)),
+            })
+
+        if zero_count > 0:
+            resp = QMessageBox.question(
+                self,
+                t("Confirmar cambios"),
+                f"{zero_count} carta(s) tienen cantidad 0 y serán eliminadas de tu colección.\n\n¿Deseas guardar los cambios?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if resp != QMessageBox.StandardButton.Yes:
+                return 0, 0
+
+        from MyQtApp.app.db_services import actualizar_cantidades_usuario
+        actualizadas, eliminadas = actualizar_cantidades_usuario(self.nombre_usuario, cambios)
+        self.session.expire_all()
+        self._pending_quantities.clear()
+        if eliminadas:
+            self.cartas_seleccionadas.clear()
+        self.pending_qty_changes_changed.emit(False)
+        self.actualizar_total_cartas()
+        self.actualizar_valor_total()
+        self.actualizar_galeria()
+
+        if actualizadas or eliminadas:
+            parts = []
+            if actualizadas:
+                parts.append(f"{actualizadas} actualizada(s)")
+            if eliminadas:
+                parts.append(f"{eliminadas} eliminada(s)")
+            show_toast(f"Cantidades guardadas: {', '.join(parts)}", "info")
+        return actualizadas, eliminadas
+
     def seleccionar_carta(self, label_obj, id_carta):
         card_key = getattr(label_obj, 'card_key', None) or id_carta
 
@@ -1165,6 +1346,8 @@ class GaleriaCartasInventario(QWidget):
                 lbl.setStyleSheet(style)
         elif label_obj:
             label_obj.setStyleSheet(style)
+
+        self._sync_steppers_for_key(card_key)
 
     def toggle_seleccionar_pagina(self):
         """Selecciona o deselecciona todas las cartas visibles en la página actual (Issue #49)."""
@@ -1202,6 +1385,7 @@ class GaleriaCartasInventario(QWidget):
                         lbl.setStyleSheet("border: none; background-color: transparent;")
                 elif labels:
                     labels.setStyleSheet("border: none; background-color: transparent;")
+                self._sync_steppers_for_key(key)
         else:
             # Seleccionar todas las cartas de esta página
             for key in page_keys:
@@ -1212,6 +1396,7 @@ class GaleriaCartasInventario(QWidget):
                         lbl.setStyleSheet("border: 2.5px solid #00cccc; border-radius: 6px; background-color: rgba(0, 255, 200, 0.25);")
                 elif labels:
                     labels.setStyleSheet("border: 2.5px solid #00cccc; border-radius: 6px; background-color: rgba(0, 255, 200, 0.25);")
+                self._sync_steppers_for_key(key)
 
     def get_cartas_seleccionadas(self):
         if not self.cartas_seleccionadas:
@@ -1253,6 +1438,7 @@ class GaleriaCartasInventario(QWidget):
                     lbl.setStyleSheet("border: none; background-color: transparent;")
             elif labels:
                 labels.setStyleSheet("border: none; background-color: transparent;")
+            self._sync_steppers_for_key(key)
 
     def iniciar_sincronizacion_precios(self):
         from MyQtApp.app.price_updater import PriceUpdaterThread
@@ -1304,7 +1490,8 @@ class GaleriaCartasInventario(QWidget):
 
         res = q.scalar()
         total_val = float(res) if res else 0.0
+        formatted_total = format_price(total_val, "USD", include_code=True)
         if self.carpeta_activa:
-            self.lbl_valor_total.setText(f"{t('Valor')} ({self.carpeta_activa}): ${total_val:,.2f} USD")
+            self.lbl_valor_total.setText(f"{t('Valor')} ({self.carpeta_activa}): {formatted_total}")
         else:
-            self.lbl_valor_total.setText(f"{t('Valor Colección')} ({t('Todas')}): ${total_val:,.2f} USD")
+            self.lbl_valor_total.setText(f"{t('Valor Colección')} ({t('Todas')}): {formatted_total}")

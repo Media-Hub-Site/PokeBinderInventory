@@ -22,7 +22,8 @@ from MyQtApp.app.getImgs import (
     get_card_placeholder_pixmap, HDImageDownloaderThread
 )
 from MyQtApp.app.price_updater import (
-    obtener_precios_carta_bd, SingleCardPriceThread, PRICE_SOURCE_ORDER
+    obtener_precios_carta_bd, SingleCardPriceThread, PRICE_SOURCE_ORDER,
+    format_price, get_active_currency
 )
 from MyQtApp.session import SessionLocal
 from MyQtApp.models import Cartas
@@ -232,6 +233,7 @@ class CardItemWidget(QWidget):
         self.idioma = getattr(carta, 'idioma', None) or language_manager.current_language
         self.card_key = f"{self.id_api}:{self.idioma}"
         self._copy_qty = 1
+        self._min_copy_qty = 1
         self.setFixedSize(size[0], size[1])
 
         layout = QVBoxLayout(self)
@@ -346,20 +348,47 @@ class CardItemWidget(QWidget):
         self.copy_stepper.hide()
 
     def _adjust_copy_qty(self, delta: int):
-        new_qty = max(1, min(99, int(self._copy_qty) + int(delta)))
+        min_q = getattr(self, "_min_copy_qty", 1)
+        new_qty = max(min_q, min(99, int(self._copy_qty) + int(delta)))
         if new_qty == self._copy_qty:
             return
         self._copy_qty = new_qty
         self.lbl_copy_qty.setText(str(new_qty))
         self.copy_qty_changed.emit(self.card_key, new_qty)
 
-    def set_selection_stepper(self, visible: bool, qty: int = 1):
+    def set_selection_stepper(self, visible: bool, qty: int = 1, min_qty: int = 1):
         """Muestra u oculta el selector de copias (- / qty / +) según el estado seleccionado."""
-        self._copy_qty = max(1, min(99, int(qty or 1)))
+        self._min_copy_qty = int(min_qty)
+        raw_qty = self._min_copy_qty if qty is None else int(qty)
+        self._copy_qty = max(self._min_copy_qty, min(99, raw_qty))
         self.lbl_copy_qty.setText(str(self._copy_qty))
         self.copy_stepper.setVisible(bool(visible))
         if visible:
             self.copy_stepper.raise_()
+
+    def update_owned_badge(self, qty: int, modified: bool = False):
+        """Actualiza la insignia xN de copias poseídas (resaltándola si tiene cambios sin guardar)."""
+        if self.owned_badge is None:
+            return
+        qty_val = max(0, int(qty or 0))
+        self.owned_badge.setText(f"x{qty_val}")
+        border_col = "#00cccc" if modified else "#f7a8b8"
+        text_col = "#5eead4" if (modified and qty_val > 0) else ("#fda4af" if qty_val == 0 else "#ffffff")
+        self.owned_badge.setStyleSheet(f"""
+            QLabel {{
+                background-color: rgba(15, 23, 42, 0.90);
+                color: {text_col};
+                font-size: 10px;
+                font-weight: 800;
+                border: 1.5px solid {border_col};
+                border-radius: 8px;
+                padding: 1px 6px;
+            }}
+        """)
+        self.owned_badge.adjustSize()
+        ox = max(24, (self.width() - self.owned_badge.width()) // 2)
+        self.owned_badge.move(ox, 3)
+        self.owned_badge.raise_()
 
     def set_card_pixmap(self, pixmap: QPixmap):
         """Actualiza la imagen de la carta en vivo (usado tras descarga asíncrona .webp)."""
@@ -1274,7 +1303,7 @@ class CardDetailDialog(QDialog):
         self._is_closing = False
         initial_prices = obtener_precios_carta_bd(self.id_api)
         self.render_prices(initial_prices)
-        if len(initial_prices) < 2 and self.id_api:
+        if (len(initial_prices) < 2 or "TCGMatch" not in initial_prices) and self.id_api:
             self.fetch_live_prices()
 
     def render_prices(self, prices_map: dict):
@@ -1290,13 +1319,16 @@ class CardDetailDialog(QDialog):
             for info in [prices_map[src]]
         ]
 
+        active_curr = get_active_currency()
+
         if not valid_entries:
             base_price = getattr(self.carta, 'price', None)
             if base_price and float(base_price) > 0:
-                self.lbl_summary.setText(f"Precio base registrado en BD: ${float(base_price):.2f} USD")
+                base_fmt = format_price(float(base_price), "USD", target_currency=active_curr, include_code=True)
+                self.lbl_summary.setText(f"Precio base registrado en BD: {base_fmt}")
             else:
                 self.lbl_summary.setText(t("Sin cotizaciones guardadas aún. Consultando mercados..."))
-            lbl_empty = QLabel(t("Presiona 'Actualizar precios en vivo' para consultar TCGPlayer, TCGMatch, PokemonTCG y TCGCSV."))
+            lbl_empty = QLabel(t("Presiona 'Actualizar precios en vivo' para consultar TCGPlayer, TCGMatch, Cardmarket, PokemonTCG y TCGCSV."))
             lbl_empty.setWordWrap(True)
             lbl_empty.setStyleSheet("font-size: 12px; color: #8c5464; padding: 12px;")
             self.prices_layout.addWidget(lbl_empty)
@@ -1307,12 +1339,16 @@ class CardDetailDialog(QDialog):
         max_usd = max(usd_values) if usd_values else 0.0
         avg_usd = sum(usd_values) / len(usd_values) if usd_values else 0.0
 
+        avg_fmt = format_price(avg_usd, "USD", target_currency=active_curr, include_code=True)
+        min_fmt = format_price(min_usd, "USD", target_currency=active_curr, include_code=False)
+        max_fmt = format_price(max_usd, "USD", target_currency=active_curr, include_code=True)
+
         if len(usd_values) >= 2:
             self.lbl_summary.setText(
-                f"Fuentes activas: {len(valid_entries)}  |  Promedio: ${avg_usd:.2f} USD  |  Rango: ${min_usd:.2f} - ${max_usd:.2f} USD"
+                f"Fuentes activas: {len(valid_entries)}  |  Promedio: {avg_fmt}  |  Rango: {min_fmt} - {max_fmt}"
             )
         else:
-            self.lbl_summary.setText(f"Fuente activa: {len(valid_entries)}  |  Valor de mercado: ${avg_usd:.2f} USD")
+            self.lbl_summary.setText(f"Fuente activa: {len(valid_entries)}  |  Valor de mercado: {avg_fmt}")
 
         for src, info in valid_entries:
             is_best = len(usd_values) >= 2 and info.get("precio_usd", 0) == min_usd
@@ -1345,13 +1381,23 @@ class CardDetailDialog(QDialog):
 
             top.addStretch()
 
-            moneda = info.get("moneda", "USD")
+            moneda = str(info.get("moneda") or "USD").upper()
             orig = float(info.get("precio_original") or 0.0)
             usd = float(info.get("precio_usd") or 0.0)
-            if moneda == "EUR":
-                price_txt = f"€{orig:.2f} EUR  (~${usd:.2f} USD)"
+            if moneda == active_curr and orig > 0:
+                price_txt = format_price(orig, moneda, target_currency=active_curr, include_code=True)
             else:
-                price_txt = f"${usd:.2f} USD"
+                conv_txt = format_price(
+                    usd if usd > 0 else orig,
+                    "USD" if usd > 0 else moneda,
+                    target_currency=active_curr,
+                    include_code=True,
+                )
+                if moneda != active_curr and orig > 0:
+                    orig_txt = format_price(orig, moneda, target_currency=moneda, include_code=True)
+                    price_txt = f"{conv_txt}  ({orig_txt})"
+                else:
+                    price_txt = conv_txt
 
             lbl_price = QLabel(price_txt)
             lbl_price.setStyleSheet("font-size: 14px; font-weight: bold; color: #15803d;")
@@ -1360,13 +1406,11 @@ class CardDetailDialog(QDialog):
 
             # Detalle de rango Low / Mid / High si está disponible
             sub_parts = []
-            sym = "€" if moneda == "EUR" else "$"
-            if info.get("low") is not None:
-                sub_parts.append(f"Mín: {sym}{info['low']:.2f}")
-            if info.get("mid") is not None:
-                sub_parts.append(f"Med: {sym}{info['mid']:.2f}")
-            if info.get("high") is not None:
-                sub_parts.append(f"Máx: {sym}{info['high']:.2f}")
+            for label_r, key_r in (("Mín", "low"), ("Med", "mid"), ("Máx", "high")):
+                raw_r = info.get(key_r)
+                if raw_r is not None and float(raw_r) > 0:
+                    fmt_r = format_price(float(raw_r), moneda, target_currency=active_curr, include_code=False)
+                    sub_parts.append(f"{label_r}: {fmt_r}")
 
             if sub_parts:
                 lbl_sub = QLabel("   |   ".join(sub_parts))
@@ -1443,6 +1487,9 @@ class CardDetailDialog(QDialog):
         self.lbl_status.setText(t("Error de conexión"))
 
 
+CardPriceCompareDialog = CardDetailDialog
+
+
 class InfoIconLabel(QLabel):
     def __init__(self, carta, parent=None):
         super().__init__(parent)
@@ -1476,10 +1523,15 @@ class InfoIconLabel(QLabel):
         self.setToolTip(self.tooltip_html)
 
     def build_tooltip_html(self, carta, preloaded_prices: dict = None):
+        active_curr = get_active_currency()
         nombre = getattr(carta, 'nombre', 'Desconocido')
         id_api = getattr(carta, 'id_api', 'N/A')
         price = getattr(carta, 'price', None)
-        precio_fmt = f"${price:.2f} USD" if (price is not None and price > 0) else t("No disponible")
+        precio_fmt = (
+            format_price(float(price), "USD", target_currency=active_curr, include_code=True)
+            if (price is not None and float(price) > 0)
+            else t("No disponible")
+        )
         tipo = getattr(carta, 'type', None) or t("No disponible")
         set_nombre = getattr(carta, 'set_name', None) or t("No disponible")
         set_id = getattr(carta, 'set_id', None) or ""
@@ -1513,12 +1565,25 @@ class InfoIconLabel(QLabel):
             ]
             for src in ordered:
                 p_info = multi_prices[src]
-                moneda = p_info.get("moneda", "USD")
+                moneda = str(p_info.get("moneda") or "USD").upper()
                 usd = float(p_info.get("precio_usd") or 0.0)
                 orig = float(p_info.get("precio_original") or 0.0)
                 if usd <= 0 and orig <= 0:
                     continue
-                val_str = f"€{orig:.2f} (~${usd:.2f})" if moneda == "EUR" else f"${usd:.2f} USD"
+                if moneda == active_curr and orig > 0:
+                    val_str = format_price(orig, moneda, target_currency=active_curr, include_code=True)
+                else:
+                    conv_str = format_price(
+                        usd if usd > 0 else orig,
+                        "USD" if usd > 0 else moneda,
+                        target_currency=active_curr,
+                        include_code=True,
+                    )
+                    if moneda != active_curr and orig > 0:
+                        orig_str = format_price(orig, moneda, target_currency=moneda, include_code=True)
+                        val_str = f"{conv_str} ({orig_str})"
+                    else:
+                        val_str = conv_str
                 price_rows_html += (
                     f"<tr>"
                     f"<td style='color: #94a3b8; padding-right: 10px;'><b>{src}:</b></td>"

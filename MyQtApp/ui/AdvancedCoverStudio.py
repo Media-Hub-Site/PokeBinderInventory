@@ -278,9 +278,13 @@ def render_advanced_elements(painter: QPainter, target_rect: QRectF, elements: l
     if not elements or target_rect.width() <= 2 or target_rect.height() <= 2:
         return
 
-    for el in elements:
-        if not isinstance(el, dict):
-            continue
+    ordered_elements = [
+        el for el in elements if isinstance(el, dict) and el.get("kind") != "text"
+    ] + [
+        el for el in elements if isinstance(el, dict) and el.get("kind") == "text"
+    ]
+
+    for el in ordered_elements:
         cx = target_rect.left() + float(el.get("x", 0.5)) * target_rect.width()
         cy = target_rect.top() + float(el.get("y", 0.5)) * target_rect.height()
         ew = max(8.0, float(el.get("w", 0.22)) * target_rect.width())
@@ -483,7 +487,13 @@ def render_back_cover_surface(
             QPointF(rect.right(), rect.top() + rect.height() * 0.32),
         )
 
-    # Sello discreto trasero
+    non_text_elements = [e for e in (elements or []) if isinstance(e, dict) and e.get("kind") != "text"]
+    text_elements = [e for e in (elements or []) if isinstance(e, dict) and e.get("kind") == "text"]
+
+    if non_text_elements:
+        render_advanced_elements(painter, rect, non_text_elements)
+
+    # Sello discreto trasero (siempre encima de stickers y figuras)
     painter.setPen(QColor(255, 255, 255, 70))
     painter.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
     painter.drawText(
@@ -492,7 +502,8 @@ def render_back_cover_surface(
         f"POKEBINDER  •  {name[:24]}" if name else "POKEBINDER STUDIO",
     )
 
-    render_advanced_elements(painter, rect, elements)
+    if text_elements:
+        render_advanced_elements(painter, rect, text_elements)
     painter.restore()
 
     painter.setPen(QPen(QColor(255, 255, 255, 85), 1.5))
@@ -547,7 +558,19 @@ def render_inside_cover_surface(
         painter.setBrush(base_col.darker(132))
         painter.drawPath(pocket_path)
 
-    # Emblema de título / subtítulo del interior de portada
+    inside_elements = (adv.get("inside") or []) if include_advanced else []
+    non_text_elements = [e for e in inside_elements if isinstance(e, dict) and e.get("kind") != "text"]
+    text_elements = [e for e in inside_elements if isinstance(e, dict) and e.get("kind") == "text"]
+
+    if non_text_elements:
+        clip_path = QPainterPath()
+        clip_path.addRoundedRect(rect, 7, 7)
+        painter.save()
+        painter.setClipPath(clip_path)
+        render_advanced_elements(painter, rect, non_text_elements)
+        painter.restore()
+
+    # Emblema de título / subtítulo del interior de portada (siempre encima de stickers y figuras)
     if adv.get("inside_show_title", True):
         custom_title = adv.get("inside_title")
         display_title = custom_title if (custom_title is not None and str(custom_title).strip()) else (folder_name or "Mi Binder")
@@ -570,12 +593,12 @@ def render_inside_cover_surface(
                 display_sub,
             )
 
-    if include_advanced:
+    if text_elements:
         clip_path = QPainterPath()
         clip_path.addRoundedRect(rect, 7, 7)
         painter.save()
         painter.setClipPath(clip_path)
-        render_advanced_elements(painter, rect, adv.get("inside", []))
+        render_advanced_elements(painter, rect, text_elements)
         painter.restore()
 
 
@@ -638,8 +661,8 @@ class _EditableCoverCanvas(QWidget):
         )
         if base_pix and not base_pix.isNull():
             painter.drawPixmap(cr.topLeft(), base_pix)
-
-        render_advanced_elements(painter, cr, self._elements)
+        else:
+            render_advanced_elements(painter, cr, self._elements)
 
         if 0 <= self._selected_idx < len(self._elements):
             sel_rect = self._el_rect(self._elements[self._selected_idx], cr)
@@ -1430,15 +1453,28 @@ class AdvancedCoverStudioDialog(QDialog):
                         self._interior_color,
                         self._name,
                         advanced_design=self._adv,
-                        include_advanced=False,
+                        include_advanced=True,
                     )
                 finally:
                     p.end()
                 return pix
             if self._face_renderer:
-                return self._face_renderer(face, w, h, self._adv.get("back_color"), include_advanced=False)
+                return self._face_renderer(
+                    face, w, h, self._adv.get("back_color"),
+                    include_advanced=True, adv_override=self._adv,
+                )
             pix = QPixmap(w, h)
             pix.fill(QColor("#1e293b"))
+            p = QPainter(pix)
+            try:
+                p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+                render_advanced_elements(
+                    p,
+                    QRectF(0.0, 0.0, float(pix.width()), float(pix.height())),
+                    self._adv.get(face, []),
+                )
+            finally:
+                p.end()
             return pix
         return None
 

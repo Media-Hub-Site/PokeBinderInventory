@@ -9,6 +9,8 @@ from MyQtApp.ui.BinderCoverWidget import (
 
 BINDER_THEMES = BINDER_DESIGNS
 
+PAGE_DRAG_MIME = "application/x-pokebinder-page"
+
 BINDER_MODES = {
     "2x2": {
         "rows": 2,

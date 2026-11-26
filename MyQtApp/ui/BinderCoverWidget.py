@@ -380,7 +380,9 @@ class BinderCoverWidget(QWidget):
         art_center = QPointF(art_area_x + art_area_w / 2.0, art_area_y + art_area_h / 2.0)
 
         kind = cfg.get("kind", "artwork")
-        if self._custom_pixmap and not self._custom_pixmap.isNull():
+        minimal_rect = QRectF(art_area_x + 4, art_area_y + 6, art_area_w - 8, art_area_h - 8)
+        has_custom_pixmap = bool(self._custom_pixmap and not self._custom_pixmap.isNull())
+        if has_custom_pixmap:
             # Imagen personalizada dibujada encima del color base completo (respeta transparencias PNG)
             target_rect = QRectF(art_area_x - 2.0, art_area_y - 2.0, art_area_w + 4.0, art_area_h + 6.0)
             scaled = self._custom_pixmap.scaled(
@@ -397,7 +399,7 @@ class BinderCoverWidget(QWidget):
         elif kind == "masterball":
             self._draw_masterball_cover(painter, art_center, min(art_area_w, art_area_h) * 0.44)
         elif kind == "minimal":
-            self._draw_minimal_cover(painter, QRectF(art_area_x + 4, art_area_y + 6, art_area_w - 8, art_area_h - 8), accent2)
+            self._draw_minimal_cover(painter, minimal_rect, accent2)
         else:
             self._draw_artwork_cover(painter, cfg.get("artwork"), QRectF(art_area_x, art_area_y, art_area_w, art_area_h), art_center, accent, accent2)
 
@@ -418,7 +420,35 @@ class BinderCoverWidget(QWidget):
         painter.setPen(stitch_pen)
         painter.drawLine(QPointF(cover_x + spine_w - 3.0, cover_y + 8), QPointF(cover_x + spine_w - 3.0, cover_y + cover_h - 8))
 
-        # 6. Placa inferior limpia con nombre del Binder y formato (3x3, 2x2...)
+        # 6. Banda elástica vertical de cierre (sello clásico de Ultra PRO)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(0, 0, 0, 70))
+        painter.drawRect(QRectF(strap_x - 3.0, cover_y, 3.0, cover_h))
+
+        strap_grad = QLinearGradient(strap_x, 0, strap_x + strap_w, 0)
+        strap_grad.setColorAt(0.0, strap.darker(120))
+        strap_grad.setColorAt(0.5, strap.lighter(115))
+        strap_grad.setColorAt(1.0, strap.darker(130))
+        painter.setBrush(strap_grad)
+        painter.drawRect(QRectF(strap_x, cover_y, strap_w, cover_h))
+
+        # Sutil textura de costura del elástico
+        painter.setPen(QPen(QColor(255, 255, 255, 35), 0.8))
+        painter.drawLine(QPointF(strap_x + 2.0, cover_y), QPointF(strap_x + 2.0, cover_y + cover_h))
+        painter.drawLine(QPointF(strap_x + strap_w - 2.0, cover_y), QPointF(strap_x + strap_w - 2.0, cover_y + cover_h))
+
+        # 7. Stickers y figuras de edición avanzada (debajo de textos y placa del binder - Issue #62)
+        front_elements = self._advanced_design.get("front") or []
+        non_text_elements = [e for e in front_elements if isinstance(e, dict) and e.get("kind") != "text"]
+        text_elements = [e for e in front_elements if isinstance(e, dict) and e.get("kind") == "text"]
+        if non_text_elements:
+            render_advanced_elements(painter, cover_rect, non_text_elements)
+
+        # 7b. Texto central del diseño minimalista (siempre encima de stickers y figuras)
+        if not has_custom_pixmap and kind == "minimal":
+            self._draw_minimal_cover_text(painter, minimal_rect)
+
+        # 7c. Placa inferior limpia con nombre del Binder y formato (3x3, 2x2...)
         plate_h = 44.0
         plate_y = cover_y + cover_h - plate_h - 8.0
         plate_rect = QRectF(cover_x + spine_w + 6.0, plate_y, strap_x - (cover_x + spine_w + 12.0), plate_h)
@@ -448,24 +478,10 @@ class BinderCoverWidget(QWidget):
             f"PRO-BINDER  |  {self._mode}",
         )
 
-        # 7. Banda elástica vertical de cierre (sello clásico de Ultra PRO)
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(0, 0, 0, 70))
-        painter.drawRect(QRectF(strap_x - 3.0, cover_y, 3.0, cover_h))
+        # 7d. Textos libres del usuario e indicador de bloqueo en la capa superior final
+        if text_elements:
+            render_advanced_elements(painter, cover_rect, text_elements)
 
-        strap_grad = QLinearGradient(strap_x, 0, strap_x + strap_w, 0)
-        strap_grad.setColorAt(0.0, strap.darker(120))
-        strap_grad.setColorAt(0.5, strap.lighter(115))
-        strap_grad.setColorAt(1.0, strap.darker(130))
-        painter.setBrush(strap_grad)
-        painter.drawRect(QRectF(strap_x, cover_y, strap_w, cover_h))
-
-        # Sutil textura de costura del elástico
-        painter.setPen(QPen(QColor(255, 255, 255, 35), 0.8))
-        painter.drawLine(QPointF(strap_x + 2.0, cover_y), QPointF(strap_x + 2.0, cover_y + cover_h))
-        painter.drawLine(QPointF(strap_x + strap_w - 2.0, cover_y), QPointF(strap_x + strap_w - 2.0, cover_y + cover_h))
-
-        # 7b. Indicador vectorial discreto de bloqueo si el binder está bloqueado
         if self._locked:
             badge_s = 22.0
             bx = strap_x - badge_s - 6.0
@@ -481,9 +497,6 @@ class BinderCoverWidget(QWidget):
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(QColor("#fbbf24"))
             painter.drawRoundedRect(QRectF(bx + 5.0, by + 9.5, 12.0, 8.5), 2, 2)
-
-        # 7c. Stickers y figuras de edición avanzada (Issue #52)
-        render_advanced_elements(painter, cover_rect, self._advanced_design.get("front"))
 
         painter.restore()
 
@@ -592,6 +605,8 @@ class BinderCoverWidget(QWidget):
         painter.setPen(pen_inner)
         painter.drawRoundedRect(inner, 6, 6)
 
+    def _draw_minimal_cover_text(self, painter: QPainter, rect: QRectF):
+        inner = rect.adjusted(6, 6, -6, -6)
         painter.setPen(QColor(255, 255, 255, 160))
         font = QFont("Segoe UI", 9, QFont.Weight.Bold)
         painter.setFont(font)
@@ -666,7 +681,9 @@ class BinderCoverWidget(QWidget):
         art_center = QPointF(art_x + art_w / 2.0, art_y + art_h / 2.0)
 
         kind = cfg.get("kind", "artwork")
-        if self._custom_pixmap and not self._custom_pixmap.isNull():
+        minimal_rect = QRectF(art_x + 4, art_y + 6, art_w - 8, art_h - 8)
+        has_custom_pixmap = bool(self._custom_pixmap and not self._custom_pixmap.isNull())
+        if has_custom_pixmap:
             tr = QRectF(art_x, art_y, art_w, art_h)
             sc = self._custom_pixmap.scaled(
                 int(max(16, tr.width())), int(max(16, tr.height())),
@@ -678,7 +695,7 @@ class BinderCoverWidget(QWidget):
         elif kind == "masterball":
             self._draw_masterball_cover(painter, art_center, min(art_w, art_h) * 0.44)
         elif kind == "minimal":
-            self._draw_minimal_cover(painter, QRectF(art_x + 4, art_y + 6, art_w - 8, art_h - 8), accent2)
+            self._draw_minimal_cover(painter, minimal_rect, accent2)
         else:
             self._draw_artwork_cover(painter, cfg.get("artwork"), QRectF(art_x, art_y, art_w, art_h), art_center, accent, accent2)
 
@@ -688,8 +705,18 @@ class BinderCoverWidget(QWidget):
         painter.setBrush(strap)
         painter.drawRect(QRectF(strap_x, 0, strap_w, rect.height()))
 
+        front_elements = (adv.get("front") or []) if include_advanced else []
+        non_text_elements = [e for e in front_elements if isinstance(e, dict) and e.get("kind") != "text"]
+        text_elements = [e for e in front_elements if isinstance(e, dict) and e.get("kind") == "text"]
+        if non_text_elements:
+            render_advanced_elements(painter, rect, non_text_elements)
+
+        if not has_custom_pixmap and kind == "minimal":
+            self._draw_minimal_cover_text(painter, minimal_rect)
+
         plate_h = 54.0
         plate_rect = QRectF(spine_w + 8.0, rect.height() - plate_h - 12.0, strap_x - (spine_w + 16.0), plate_h)
+        painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor(15, 23, 42, 165))
         painter.drawRoundedRect(plate_rect, 8, 8)
         painter.setPen(QColor("#ffffff"))
@@ -699,8 +726,22 @@ class BinderCoverWidget(QWidget):
         painter.setFont(QFont("Segoe UI", 9, QFont.Weight.DemiBold))
         painter.drawText(plate_rect.adjusted(10, 26, -10, -6), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, f"PRO-BINDER  |  {self._mode}")
 
-        if include_advanced:
-            render_advanced_elements(painter, rect, adv.get("front"))
+        if text_elements:
+            render_advanced_elements(painter, rect, text_elements)
+
+        if self._locked:
+            badge_s = 22.0
+            bx = strap_x - badge_s - 6.0
+            by = 8.0
+            painter.setPen(QPen(QColor(255, 255, 255, 190), 1.2))
+            painter.setBrush(QColor(15, 23, 42, 200))
+            painter.drawRoundedRect(QRectF(bx, by, badge_s, badge_s), 6, 6)
+            painter.setPen(QPen(QColor("#fbbf24"), 1.7))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawArc(QRectF(bx + 6.5, by + 4.0, 9.0, 9.0), 0, 180 * 16)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor("#fbbf24"))
+            painter.drawRoundedRect(QRectF(bx + 5.0, by + 9.5, 12.0, 8.5), 2, 2)
 
         painter.restore()
         painter.setPen(QPen(QColor(255, 255, 255, 85), 1.5))

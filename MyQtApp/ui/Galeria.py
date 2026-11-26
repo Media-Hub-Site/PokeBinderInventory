@@ -13,6 +13,8 @@ from MyQtApp.app.getImgs import (
     get_pixmap_from_zip, get_webp_pixmap, get_card_placeholder_pixmap,
     has_exact_lang_image, CardImageLoaderManager
 )
+from MyQtApp.app.filtro import sort_filter_values, format_filter_option_label
+from MyQtApp.app.price_updater import format_price, get_active_currency
 from MyQtApp.ui.CardWidget import ClickableLabel, CardItemWidget, VariantLegendBar, CardZoomOverlay
 from MyQtApp.ui.FilterVisualBar import EnergyTypeFilterBar
 from ..session import SessionLocal
@@ -86,17 +88,17 @@ class GaleriaCartas(QWidget):
 
         self.filtros = {}
         campos = {
-            "Rareza": Cartas.rarity,
             "Tipo": Cartas.type,
-            "Edición": Cartas.edition,
             "Etapa": Cartas.stage,
+            "Rule Box": Cartas.especial_type,
             "Entrenador": Cartas.trainer,
-            "Especial": Cartas.especial_type
+            "Rareza": Cartas.rarity,
+            "Edición": Cartas.edition
         }
 
         for etiqueta, columna in campos.items():
             combo = QComboBox()
-            combo.addItem(f"{t(etiqueta)}: {t('Todos')}")
+            combo.addItem(f"{t(etiqueta)}: {t('Todos')}", None)
             combo.setProperty("class", "FilterCombo")
             combo.currentIndexChanged.connect(self.reset_page_and_actualizar)
             self.filtros[columna] = combo
@@ -146,7 +148,8 @@ class GaleriaCartas(QWidget):
         self.list_table.setColumnCount(10)
         self.list_table.setHorizontalHeaderLabels([
             t("#Dex"), t("Nombre"), t("Tipo"), t("Generación"),
-            t("Rareza"), t("Edición"), t("Etapa"), t("Idioma"), t("Precio (USD)"), t("Copias")
+            t("Rareza"), t("Edición"), t("Etapa"), t("Idioma"),
+            f"{t('Precio')} ({get_active_currency()})", t("Copias")
         ])
         self.list_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.list_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -222,10 +225,23 @@ class GaleriaCartas(QWidget):
         language_manager.language_changed.connect(self.retranslate_ui)
 
     def cargar_filtros(self):
+        curr_lang = language_manager.current_language
         for columna, combo in self.filtros.items():
+            field_name = getattr(columna, "key", str(columna))
+            prev_val = self._get_filter_value(combo)
+            combo.blockSignals(True)
+            while combo.count() > 1:
+                combo.removeItem(1)
             valores = self.session.query(columna).filter(columna != None).distinct().all()
-            for (val,) in valores:
-                combo.addItem(val)
+            for raw_val in sort_filter_values(field_name, valores):
+                display_txt = format_filter_option_label(field_name, raw_val, curr_lang)
+                combo.addItem(display_txt, raw_val)
+            if prev_val:
+                idx = combo.findData(prev_val)
+                if idx < 0:
+                    idx = combo.findText(prev_val, Qt.MatchFlag.MatchFixedString)
+                combo.setCurrentIndex(idx if idx >= 0 else 0)
+            combo.blockSignals(False)
 
     def on_text_changed(self):
         self.timer_busqueda.start(300)
@@ -238,7 +254,10 @@ class GaleriaCartas(QWidget):
     def _get_filter_value(self, combo):
         if combo.currentIndex() <= 0:
             return None
-        return combo.currentText().strip()
+        data = combo.currentData()
+        if data is not None:
+            return str(data).strip() or None
+        return combo.currentText().strip() or None
 
     def _build_language_query(self):
         selected_lang = self.combo_idioma.currentData()
@@ -408,9 +427,13 @@ class GaleriaCartas(QWidget):
         if not type_val:
             combo.setCurrentIndex(0)
         else:
-            idx = combo.findText(type_val, Qt.MatchFlag.MatchFixedString)
+            idx = combo.findData(type_val)
+            if idx < 0:
+                idx = combo.findText(type_val, Qt.MatchFlag.MatchFixedString)
             if idx < 0 and type_val == "Lightning":
-                idx = combo.findText("Electric", Qt.MatchFlag.MatchFixedString)
+                idx = combo.findData("Electric")
+                if idx < 0:
+                    idx = combo.findText("Electric", Qt.MatchFlag.MatchFixedString)
             combo.setCurrentIndex(idx if idx >= 0 else 0)
         combo.blockSignals(False)
         self.reset_page_and_actualizar()
@@ -432,12 +455,15 @@ class GaleriaCartas(QWidget):
 
     def _populate_list_table(self, cartas):
         self.list_table.blockSignals(True)
+        self.list_table.setHorizontalHeaderItem(
+            8, QTableWidgetItem(f"{t('Precio')} ({get_active_currency()})")
+        )
         self.list_table.setRowCount(len(cartas))
         for r_idx, carta in enumerate(cartas):
             card_lang = carta.idioma or language_manager.current_language
             card_key = f"{carta.id_api}:{card_lang}"
             dex_txt = f"#{carta.pokedex_id:04d}" if getattr(carta, "pokedex_id", None) else "-"
-            price_val = f"${float(carta.price):,.2f}" if carta.price else "-"
+            price_val = format_price(float(carta.price), "USD", include_code=False) if carta.price else "-"
             vals = [
                 dex_txt,
                 carta.nombre or "",
@@ -556,13 +582,40 @@ class GaleriaCartas(QWidget):
         total_paginas = max(1, (self.total_cartas + self.CARTAS_POR_PAGINA - 1) // self.CARTAS_POR_PAGINA)
         self.lbl_pagina.setText(f"{t('Página')} {self.current_page+1} {t('de')} {total_paginas}")
         
-        campos_labels = [("Rareza", Cartas.rarity), ("Tipo", Cartas.type), ("Edición", Cartas.edition),
-                         ("Etapa", Cartas.stage), ("Entrenador", Cartas.trainer), ("Especial", Cartas.especial_type)]
+        curr_lang = language_manager.current_language
+        campos_labels = [
+            ("Tipo", Cartas.type),
+            ("Etapa", Cartas.stage),
+            ("Rule Box", Cartas.especial_type),
+            ("Entrenador", Cartas.trainer),
+            ("Rareza", Cartas.rarity),
+            ("Edición", Cartas.edition),
+        ]
         for etiqueta, columna in campos_labels:
             if columna in self.filtros:
                 cb = self.filtros[columna]
+                field_name = getattr(columna, "key", str(columna))
+                selected_data = self._get_filter_value(cb)
+                cb.blockSignals(True)
                 if cb.count() > 0:
                     cb.setItemText(0, f"{t(etiqueta)}: {t('Todos')}")
+                for i in range(1, cb.count()):
+                    raw_val = cb.itemData(i)
+                    if raw_val is not None:
+                        cb.setItemText(i, format_filter_option_label(field_name, raw_val, curr_lang))
+                if selected_data is not None:
+                    idx = cb.findData(selected_data)
+                    if idx < 0:
+                        idx = cb.findText(selected_data, Qt.MatchFlag.MatchFixedString)
+                    cb.setCurrentIndex(idx if idx >= 0 else 0)
+                cb.blockSignals(False)
+
+        if hasattr(self, "combo_idioma") and self.combo_idioma.count() > 0:
+            self.combo_idioma.setItemText(0, f"{t('Idioma')}: {t('Todos')}")
+        if hasattr(self, "list_table"):
+            self.list_table.setHorizontalHeaderItem(
+                8, QTableWidgetItem(f"{t('Precio')} ({get_active_currency()})")
+            )
 
     def pagina_anterior(self):
         if self.current_page > 0:

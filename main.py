@@ -265,6 +265,9 @@ def ensure_db_schema_up_to_date():
             conn.commit()
             conn.close()
 
+            from MyQtApp.app.card_data_migration import normalize_cards_database
+            normalize_cards_database(DB_PATH)
+
             from MyQtApp.app.pokemon_generations import populate_generations_in_db
             populate_generations_in_db(DB_PATH, force=False)
         except Exception as e:
@@ -289,8 +292,18 @@ def main():
 
     app = QApplication(sys.argv)
 
-    # Inicializar Base de datos
-    Base.metadata.create_all(bind=engine)
+    # Inicializar Base de datos (con autorrecuperación si SQLite sufrió daño previo)
+    try:
+        Base.metadata.create_all(bind=engine)
+    except Exception as db_err:
+        print(f"⚠️ Error al inicializar BD ({db_err}); intentando autorrecuperación desde respaldo...")
+        try:
+            engine.dispose()
+        except Exception:
+            pass
+        from MyQtApp.app.backup import ensure_database_integrity_or_recover
+        ensure_database_integrity_or_recover()
+        Base.metadata.create_all(bind=engine)
     ensure_db_schema_up_to_date()
 
     # Generar respaldo de seguridad preventivo al iniciar

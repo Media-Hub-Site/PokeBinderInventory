@@ -13,6 +13,7 @@ from MyQtApp.ui.AdvancedCoverStudio import render_inside_cover_surface
 from MyQtApp.ui.BinderBookAnimations import CardSlideInOverlay
 from MyQtApp.ui.pixmap_cache import scale_cached_pixmap
 from MyQtApp.ui.toast import show_toast
+from MyQtApp.ui.binder.constants import PAGE_DRAG_MIME
 
 
 class DraggableCardLabel(QLabel):
@@ -350,12 +351,37 @@ class BinderSlot(QLabel):
                 print(f"Error en animación de salida de carta: {e}")
 
     def dragEnterEvent(self, event):
+        if event.mimeData().hasFormat(PAGE_DRAG_MIME):
+            p = self.parent()
+            if p and hasattr(p, "set_page_drop_hover"):
+                p.set_page_drop_hover(True)
+            event.acceptProposedAction()
+            return
         if event.mimeData().hasText():
             event.accept()
         else:
             event.ignore()
 
+    def dragLeaveEvent(self, event):
+        p = self.parent()
+        if p and hasattr(p, "set_page_drop_hover"):
+            p.set_page_drop_hover(False)
+        super().dragLeaveEvent(event)
+
     def dropEvent(self, event):
+        if event.mimeData().hasFormat(PAGE_DRAG_MIME):
+            p = self.parent()
+            if p and hasattr(p, "set_page_drop_hover"):
+                p.set_page_drop_hover(False)
+            try:
+                src_page = int(bytes(event.mimeData().data(PAGE_DRAG_MIME)).decode("utf-8"))
+            except Exception:
+                event.ignore()
+                return
+            if self.binder_view and hasattr(self.binder_view, "swap_pages"):
+                self.binder_view.swap_pages(src_page, self.page_index)
+            event.acceptProposedAction()
+            return
         try:
             card_id = event.mimeData().text()
             source_slot = event.mimeData().property("source_slot")
@@ -380,6 +406,12 @@ class BinderSlot(QLabel):
 
     # Allow dragging FROM the slot too
     def mousePressEvent(self, event):
+        if getattr(self.binder_view, "move_pages_mode", False) and event.button() == Qt.MouseButton.LeftButton:
+            p = self.parent()
+            if p and hasattr(p, "_begin_page_press"):
+                p._begin_page_press(self.mapTo(p, event.position().toPoint()))
+                event.accept()
+                return
         try:
             if event.button() == Qt.MouseButton.LeftButton and self.id_api:
                 self.drag_start_position = event.pos()
@@ -388,6 +420,14 @@ class BinderSlot(QLabel):
             print(f"Error en BinderSlot mousePressEvent: {e}")
 
     def mouseMoveEvent(self, event):
+        if getattr(self.binder_view, "move_pages_mode", False):
+            if event.buttons() & Qt.MouseButton.LeftButton:
+                p = self.parent()
+                if p and hasattr(p, "_handle_page_move"):
+                    p._handle_page_move(self.mapTo(p, event.position().toPoint()))
+                    event.accept()
+                    return
+            return
         try:
             if not self.id_api:
                 return
@@ -418,6 +458,12 @@ class BinderSlot(QLabel):
             print(f"Error en BinderSlot mouseMoveEvent: {e}")
 
     def mouseReleaseEvent(self, event):
+        if getattr(self.binder_view, "move_pages_mode", False) and event.button() == Qt.MouseButton.LeftButton:
+            p = self.parent()
+            if p and hasattr(p, "_finish_page_release"):
+                p._finish_page_release(self.mapTo(p, event.position().toPoint()))
+                event.accept()
+                return
         if event.button() == Qt.MouseButton.LeftButton:
             if self.long_press_timer.isActive():
                 self.long_press_timer.stop()
@@ -435,6 +481,12 @@ class BinderPage(QWidget):
         self.cols = cols
         self.is_left = is_left
         self.interior_color = interior_color or "#18181e"
+        self._move_mode = False
+        self._move_selected = False
+        self._page_drop_hover = False
+        self._page_drag_start = None
+
+        self.setAcceptDrops(True)
 
         layout = QGridLayout(self)
         layout.setSpacing(10)
@@ -456,6 +508,141 @@ class BinderPage(QWidget):
                 )
                 layout.addWidget(slot, r, c)
                 self.slots.append(slot)
+
+        self.page_move_handle = QLabel(f"⇄ {t('Hoja')} {self.page_index + 1} · {t('Arrastrar')}", self)
+        self.page_move_handle.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.page_move_handle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.page_move_handle.adjustSize()
+        self.page_move_handle.hide()
+        self._refresh_move_handle_style()
+
+    def _refresh_move_handle_style(self):
+        if self._move_selected:
+            txt = f"⇄ {t('Hoja')} {self.page_index + 1} ({t('Seleccionada')})"
+            bg = "rgba(245, 158, 11, 235)"
+            bd = "#fef08a"
+        else:
+            txt = f"⇄ {t('Hoja')} {self.page_index + 1} · {t('Arrastrar')}"
+            bg = "rgba(2, 132, 199, 225)"
+            bd = "#bae6fd"
+        self.page_move_handle.setText(txt)
+        self.page_move_handle.setStyleSheet(f"""
+            QLabel {{
+                background-color: {bg};
+                color: #ffffff;
+                border: 1.5px solid {bd};
+                border-radius: 10px;
+                padding: 3px 12px;
+                font-size: 11px;
+                font-weight: 800;
+            }}
+        """)
+        self.page_move_handle.adjustSize()
+        self._position_move_handle()
+
+    def _position_move_handle(self):
+        if hasattr(self, "page_move_handle") and self.page_move_handle:
+            hw = self.page_move_handle.width()
+            hx = max(6, (self.width() - hw) // 2)
+            self.page_move_handle.move(hx, 8)
+            self.page_move_handle.raise_()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._position_move_handle()
+
+    def set_move_mode(self, enabled: bool, selected: bool = False):
+        self._move_mode = bool(enabled)
+        self._move_selected = bool(enabled and selected)
+        if not self._move_mode:
+            self._page_drop_hover = False
+            self._page_drag_start = None
+            self.page_move_handle.hide()
+            self.unsetCursor()
+        else:
+            self._refresh_move_handle_style()
+            self.page_move_handle.show()
+            self.page_move_handle.raise_()
+            self.setCursor(Qt.CursorShape.OpenHandCursor)
+        self.update()
+
+    def set_page_drop_hover(self, hovering: bool):
+        val = bool(hovering)
+        if self._page_drop_hover != val:
+            self._page_drop_hover = val
+            self.update()
+
+    def _begin_page_press(self, pos: QPoint):
+        if self._move_mode:
+            self._page_drag_start = pos
+
+    def _handle_page_move(self, pos: QPoint):
+        if not self._move_mode or self._page_drag_start is None:
+            return
+        if (pos - self._page_drag_start).manhattanLength() >= QApplication.startDragDistance():
+            self._page_drag_start = None
+            drag = QDrag(self)
+            mime = QMimeData()
+            mime.setData(PAGE_DRAG_MIME, str(self.page_index).encode("utf-8"))
+            drag.setMimeData(mime)
+            pix = self.grab()
+            if not pix.isNull():
+                thumb = scale_cached_pixmap(pix, 118, 160, keep_aspect=True, smooth=True)
+                drag.setPixmap(thumb)
+                drag.setHotSpot(QPoint(thumb.width() // 2, thumb.height() // 2))
+            drag.exec(Qt.DropAction.MoveAction)
+
+    def _finish_page_release(self, _pos: QPoint):
+        if self._move_mode and self._page_drag_start is not None:
+            self._page_drag_start = None
+            if self.binder_view and hasattr(self.binder_view, "on_page_move_clicked"):
+                self.binder_view.on_page_move_clicked(self.page_index)
+
+    def mousePressEvent(self, event):
+        if self._move_mode and event.button() == Qt.MouseButton.LeftButton:
+            self._begin_page_press(event.position().toPoint())
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._move_mode and (event.buttons() & Qt.MouseButton.LeftButton):
+            self._handle_page_move(event.position().toPoint())
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if self._move_mode and event.button() == Qt.MouseButton.LeftButton:
+            self._finish_page_release(event.position().toPoint())
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasFormat(PAGE_DRAG_MIME):
+            self.set_page_drop_hover(True)
+            event.acceptProposedAction()
+            return
+        event.ignore()
+
+    def dragLeaveEvent(self, event):
+        self.set_page_drop_hover(False)
+        super().dragLeaveEvent(event)
+
+    def dropEvent(self, event):
+        self.set_page_drop_hover(False)
+        if event.mimeData().hasFormat(PAGE_DRAG_MIME):
+            try:
+                src_page = int(bytes(event.mimeData().data(PAGE_DRAG_MIME)).decode("utf-8"))
+            except Exception:
+                event.ignore()
+                return
+            if self.binder_view and hasattr(self.binder_view, "swap_pages"):
+                self.binder_view.swap_pages(src_page, self.page_index)
+            event.acceptProposedAction()
+            return
+        event.ignore()
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -514,6 +701,19 @@ class BinderPage(QWidget):
         painter.setBrush(holo)
         painter.setPen(QPen(QColor(255, 255, 255, 90), 0.8))
         painter.drawEllipse(QPointF(hx, hy), 4.5, 4.5)
+
+        if self._page_drop_hover:
+            painter.setBrush(QColor(56, 189, 248, 52))
+            painter.setPen(QPen(QColor("#38bdf8"), 3.0))
+            painter.drawRoundedRect(rect.adjusted(1.5, 1.5, -1.5, -1.5), 7, 7)
+        elif self._move_selected:
+            painter.setBrush(QColor(245, 158, 11, 28))
+            painter.setPen(QPen(QColor("#f59e0b"), 3.0))
+            painter.drawRoundedRect(rect.adjusted(1.5, 1.5, -1.5, -1.5), 7, 7)
+        elif self._move_mode:
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.setPen(QPen(QColor(56, 189, 248, 150), 1.6, Qt.PenStyle.DashLine))
+            painter.drawRoundedRect(rect.adjusted(1.5, 1.5, -1.5, -1.5), 7, 7)
 
     def get_slot(self, slot_index):
         if 0 <= slot_index < len(self.slots):

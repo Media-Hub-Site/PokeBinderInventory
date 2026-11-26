@@ -51,7 +51,7 @@ from MyQtApp.ui.BinderBookAnimations import (
 )
 from MyQtApp.ui.pixmap_cache import get_cached_pixmap
 from MyQtApp.ui.toast import show_toast
-from MyQtApp.ui.binder.constants import BINDER_MODES
+from MyQtApp.ui.binder.constants import BINDER_MODES, BINDER_MODE_ORDER
 from MyQtApp.ui.binder.widgets import (
     DraggableCardLabel,
     BinderSlot,
@@ -321,7 +321,7 @@ class BinderView(QWidget):
         self.btn_ver_detalles.setFixedHeight(26)
         self.btn_ver_detalles.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_ver_detalles.setToolTip(
-            t("Activa o desactiva la variante, la burbuja de información y el idioma sobre las cartas del binder")
+            t("Activa o desactiva la variante, burbuja de info, idioma y color de fondo (sleeve) en las cartas")
         )
         self.btn_ver_detalles.clicked.connect(self.toggle_binder_card_details)
         self._refresh_ver_detalles_btn_style()
@@ -693,11 +693,13 @@ class BinderView(QWidget):
                         name, design, color, mode = self._get_current_folder_theme()
                         custom_image, _interior, locked = self._get_current_folder_extra()
                         adv_design = self.get_user_folders().get(closing_folder_id, {}).get("advanced_design")
+                        b_type = self._get_current_folder_type(closing_folder_id)
                         cover_w = max(140, int(board_local.width() * 0.5))
                         cover_h = max(180, int(board_local.height()))
                         cover_pix = render_transparent_cover_pixmap(
                             name, design, color, mode, cover_w, cover_h,
-                            custom_image=custom_image, locked=locked, advanced_design=adv_design
+                            custom_image=custom_image, locked=locked, advanced_design=adv_design,
+                            binder_type=b_type,
                         )
 
                         # Cambiar a la estantería y calcular el destino exacto de la carpeta
@@ -832,6 +834,12 @@ class BinderView(QWidget):
         locked = bool(folder.get("locked", False))
         return custom_image, interior_color, locked
 
+    def _get_current_folder_type(self, folder_id: str | None = None) -> str:
+        """Retorna 'toploader' o 'normal' para la carpeta especificada o la actual (Issue #79)."""
+        fid = folder_id or self.current_folder_id
+        folder = self.get_user_folders().get(fid, {})
+        return "toploader" if folder.get("binder_type") == "toploader" else "normal"
+
     def abrir_carpeta(self, folder_id, origin_widget=None):
         """Abre la carpeta seleccionada con animación 3D de apertura de libro/binder."""
         folders = self.get_user_folders()
@@ -914,7 +922,8 @@ class BinderView(QWidget):
             cover_h = max(180, int(board_local.height()))
             cover_pix = render_transparent_cover_pixmap(
                 name, design, color, mode, cover_w, cover_h,
-                custom_image=custom_image, locked=locked, advanced_design=adv_design
+                custom_image=custom_image, locked=locked, advanced_design=adv_design,
+                binder_type=self._get_current_folder_type(),
             )
 
             # Mapear el rectángulo del binder a coordenadas de self.main_stack
@@ -1243,6 +1252,7 @@ class BinderView(QWidget):
         mode = f_data.get("mode", "3x3")
         custom_image = f_data.get("custom_image") or None
         locked = bool(f_data.get("locked", False))
+        binder_type = "toploader" if f_data.get("binder_type") == "toploader" else "normal"
 
         cards_dict = f_data.get("cards", {}).get(mode, {})
         cant_cartas = len(cards_dict)
@@ -1275,6 +1285,7 @@ class BinderView(QWidget):
             custom_image=custom_image,
             locked=locked,
             advanced_design=f_data.get("advanced_design"),
+            binder_type=binder_type,
             parent=frame,
         )
         cover.setFixedSize(196, 212)
@@ -1322,7 +1333,8 @@ class BinderView(QWidget):
         bottom_row.setContentsMargins(2, 0, 2, 0)
         bottom_row.setSpacing(6)
 
-        lbl_count = QLabel(f"{cant_cartas} cartas  |  {mode}")
+        mode_badge = f"{mode} · TopLoader" if binder_type == "toploader" else mode
+        lbl_count = QLabel(f"{cant_cartas} cartas  |  {mode_badge}")
         lbl_count.setStyleSheet("font-size: 11px; font-weight: 600; color: #703043; border: none; background: transparent;")
         bottom_row.addWidget(lbl_count)
         bottom_row.addStretch()
@@ -1488,6 +1500,7 @@ class BinderView(QWidget):
         custom_image = f_data.get("custom_image") or None
         locked = bool(f_data.get("locked", False))
         adv = normalize_advanced_design(f_data.get("advanced_design"))
+        b_type = "toploader" if f_data.get("binder_type") == "toploader" else "normal"
 
         temp_cover = BinderCoverWidget(
             name=name,
@@ -1497,6 +1510,7 @@ class BinderView(QWidget):
             custom_image=custom_image,
             locked=locked,
             advanced_design=adv,
+            binder_type=b_type,
         )
         _cfg, _base, spine_col, _strap, _a1, _a2 = temp_cover._effective_colors()
         front_pix = temp_cover.render_face_pixmap("front", 380, 500, adv.get("back_color"), include_advanced=True)
@@ -1566,6 +1580,7 @@ class BinderView(QWidget):
         name, design, color, mode = self._get_current_folder_theme()
         custom_image, interior_color, _locked = self._get_current_folder_extra()
         adv_design = folder.get("advanced_design")
+        b_type = "toploader" if folder.get("binder_type") == "toploader" else "normal"
 
         preview_w = BinderCoverWidget(
             name=name,
@@ -1574,6 +1589,7 @@ class BinderView(QWidget):
             mode=mode,
             custom_image=custom_image,
             advanced_design=adv_design,
+            binder_type=b_type,
         )
         studio = AdvancedCoverStudioDialog(
             item_type="binder",
@@ -1681,7 +1697,7 @@ class BinderView(QWidget):
 
         dlg = QDialog(self)
         dlg.setWindowTitle(t("Editar Binder") if editing else t("Crear Nuevo Binder"))
-        dlg.setFixedSize(640, 475)
+        dlg.setFixedSize(660, 520)
         dlg.setStyleSheet("""
             QDialog {
                 background-color: #fff5f7;
@@ -1751,6 +1767,7 @@ class BinderView(QWidget):
         default_design = resolve_design_key(existing.get("design", list(BINDER_DESIGNS.keys())[0]))
         init_name = existing.get("name", "") if editing else ""
         init_mode = existing.get("mode", "3x3") if editing else "3x3"
+        init_binder_type = "toploader" if (editing and existing.get("binder_type") == "toploader") else "normal"
         init_color = existing.get("color", "auto") if editing else "auto"
         init_custom_image = existing.get("custom_image") if editing else None
         init_advanced = normalize_advanced_design(existing.get("advanced_design") if editing else None)
@@ -1789,6 +1806,7 @@ class BinderView(QWidget):
             mode=init_mode,
             custom_image=init_custom_image,
             advanced_design=init_advanced,
+            binder_type=init_binder_type,
             parent=preview_panel,
         )
         live_preview.setFixedSize(190, 246)
@@ -1848,7 +1866,7 @@ class BinderView(QWidget):
         col_mode.setSpacing(4)
         col_mode.addWidget(QLabel(t("Bolsillos")))
         combo_tamano = QComboBox()
-        combo_tamano.addItems(["3x3", "2x2", "3x4", "4x4"])
+        combo_tamano.addItems(BINDER_MODE_ORDER)
         _style_combo_popup_white_text(combo_tamano)
         idx_m = combo_tamano.findText(init_mode)
         if idx_m >= 0:
@@ -1858,6 +1876,19 @@ class BinderView(QWidget):
 
         form_layout.addLayout(row_top)
 
+        # Selector de Tipo de Binder (Normal vs TopLoader, Issue #79)
+        type_row = QHBoxLayout()
+        type_row.setSpacing(8)
+        type_row.addWidget(QLabel(t("Tipo de Binder")))
+        btn_type_normal = QPushButton(t("Normal"))
+        btn_type_toploader = QPushButton(t("TopLoader"))
+        for tb in (btn_type_normal, btn_type_toploader):
+            tb.setFixedHeight(28)
+            tb.setCursor(Qt.CursorShape.PointingHandCursor)
+        type_row.addWidget(btn_type_normal, 1)
+        type_row.addWidget(btn_type_toploader, 1)
+        form_layout.addLayout(type_row)
+
         # Estado mutable del diálogo
         state = {
             "custom_color": init_color if (init_color and init_color not in ("auto", "#ffeef2")) else "#1e1b26",
@@ -1865,6 +1896,7 @@ class BinderView(QWidget):
             "interior_color": init_interior,
             "interior_overridden": bool(editing and existing.get("interior_color")),
             "advanced_design": init_advanced,
+            "binder_type": init_binder_type,
         }
 
         # Pestañas: Predefinidos vs Personalizar
@@ -1996,6 +2028,25 @@ class BinderView(QWidget):
                 f"border: 1.5px solid #cbd5e1; border-radius: 8px; font-size: 11px; font-weight: 700;"
             )
 
+            # Estilo de botones Normal vs TopLoader
+            is_tl = state["binder_type"] == "toploader"
+            btn_type_normal.setStyleSheet(
+                "QPushButton { background-color: #f56b7b; color: #ffffff; border: 2px solid #e25b70; "
+                "border-radius: 9px; font-weight: 700; font-size: 12px; }"
+                if not is_tl else
+                "QPushButton { background-color: #ffffff; color: #703043; border: 1.5px solid #f2c4ce; "
+                "border-radius: 9px; font-weight: 600; font-size: 12px; }"
+                "QPushButton:hover { background-color: #ffeef2; }"
+            )
+            btn_type_toploader.setStyleSheet(
+                "QPushButton { background-color: #0284c7; color: #ffffff; border: 2px solid #38bdf8; "
+                "border-radius: 9px; font-weight: 700; font-size: 12px; }"
+                if is_tl else
+                "QPushButton { background-color: #ffffff; color: #0369a1; border: 1.5px solid #bae6fd; "
+                "border-radius: 9px; font-weight: 600; font-size: 12px; }"
+                "QPushButton:hover { background-color: #e0f2fe; }"
+            )
+
             # Actualizar vista previa 3D
             if is_custom:
                 live_preview.set_binder_props(
@@ -2005,6 +2056,7 @@ class BinderView(QWidget):
                     mode=combo_tamano.currentText(),
                     custom_image=state["custom_image"],
                     advanced_design=state["advanced_design"],
+                    binder_type=state["binder_type"],
                 )
             else:
                 live_preview.set_binder_props(
@@ -2014,6 +2066,7 @@ class BinderView(QWidget):
                     mode=combo_tamano.currentText(),
                     custom_image=None,
                     advanced_design=state["advanced_design"],
+                    binder_type=state["binder_type"],
                 )
 
         def choose_cover_color():
@@ -2054,6 +2107,12 @@ class BinderView(QWidget):
             )
             refresh_ui()
 
+        def set_binder_type(new_type: str):
+            state["binder_type"] = "toploader" if new_type == "toploader" else "normal"
+            refresh_ui()
+
+        btn_type_normal.clicked.connect(lambda: set_binder_type("normal"))
+        btn_type_toploader.clicked.connect(lambda: set_binder_type("toploader"))
         btn_cover_color.clicked.connect(choose_cover_color)
         btn_pick_img.clicked.connect(choose_custom_image)
         btn_clear_img.clicked.connect(clear_custom_image)
@@ -2184,9 +2243,10 @@ class BinderView(QWidget):
                 f_obj["custom_image"] = final_custom_image
                 f_obj["interior_color"] = final_interior
                 f_obj["mode"] = final_mode
+                f_obj["binder_type"] = state["binder_type"]
                 f_obj["advanced_design"] = state["advanced_design"]
-                f_obj.setdefault("cards", {"2x2": {}, "3x3": {}, "3x4": {}, "4x4": {}})
-                for m_key in ("2x2", "3x3", "3x4", "4x4"):
+                f_obj.setdefault("cards", {m_key: {} for m_key in BINDER_MODES})
+                for m_key in BINDER_MODES:
                     f_obj["cards"].setdefault(m_key, {})
 
                 if old_mode != final_mode:
@@ -2222,12 +2282,8 @@ class BinderView(QWidget):
                     "advanced_design": state["advanced_design"],
                     "locked": False,
                     "mode": final_mode,
-                    "cards": {
-                        "2x2": {},
-                        "3x3": {},
-                        "3x4": {},
-                        "4x4": {}
-                    }
+                    "binder_type": state["binder_type"],
+                    "cards": {m_key: {} for m_key in BINDER_MODES},
                 }
                 self.save_binder_data()
                 self.current_folder_id = new_id
@@ -2433,7 +2489,8 @@ class BinderView(QWidget):
             existing_cards = {
                 "2x2": user_data.get("2x2", {}),
                 "3x3": user_data.get("3x3", {}),
-                "3x4": user_data.get("3x4", user_data.get("4x3", {})),
+                "4x3": user_data.get("4x3", {}),
+                "3x4": user_data.get("3x4", {}),
                 "4x4": user_data.get("4x4", {})
             }
             has_existing = any(len(v) > 0 for v in existing_cards.values())
@@ -2684,11 +2741,13 @@ class BinderView(QWidget):
     def create_spread_widget(self, spread_index, mode=None):
         folder_name, design, color, _ = self._get_current_folder_theme()
         _custom_img, interior_color, _locked = self._get_current_folder_extra()
+        binder_type = self._get_current_folder_type()
         spread_widget = BinderSpreadFrame(
             design=design,
             color=color,
             can_go_prev=(spread_index > 0),
             interior_color=interior_color,
+            binder_type=binder_type,
         )
         spread_widget.drag_turn_started.connect(self._on_drag_turn_started)
         spread_widget.drag_turn_moved.connect(self._on_drag_turn_moved)
@@ -2697,7 +2756,7 @@ class BinderView(QWidget):
         p_idx_1, p_idx_2 = self._spread_page_indices(spread_index)
 
         target_mode = mode if mode else self.current_mode
-        cfg = BINDER_MODES[target_mode]
+        cfg = BINDER_MODES.get(target_mode, BINDER_MODES["3x3"])
 
         if p_idx_1 is None:
             adv_design = self.get_user_folders().get(self.current_folder_id, {}).get("advanced_design")
@@ -2723,6 +2782,7 @@ class BinderView(QWidget):
                 card_h=cfg["card_h"],
                 is_left=True,
                 interior_color=interior_color,
+                binder_type=binder_type,
             )
             self.populate_page(page_left, p_idx_1, target_mode)
 
@@ -2736,6 +2796,7 @@ class BinderView(QWidget):
             card_h=cfg["card_h"],
             is_left=False,
             interior_color=interior_color,
+            binder_type=binder_type,
         )
         self.populate_page(page_right, p_idx_2, target_mode)
 
@@ -3025,7 +3086,7 @@ class BinderView(QWidget):
 
     def populate_page(self, page_widget, page_idx, mode=None):
         target_mode = mode if mode else self.current_mode
-        cfg = BINDER_MODES[target_mode]
+        cfg = BINDER_MODES.get(target_mode, BINDER_MODES["3x3"])
         slots_per_page = cfg["rows"] * cfg["cols"]
 
         slot_entries = []
@@ -3036,13 +3097,14 @@ class BinderView(QWidget):
             if card_info and slot:
                 card_id, card_lang, card_var = self._parse_card_entry(card_info)
                 if card_id:
-                    slot_entries.append((slot, card_id, card_lang, card_var))
+                    sleeve_col = self._extract_sleeve_color(card_info)
+                    slot_entries.append((slot, card_id, card_lang, card_var, sleeve_col))
                     to_preload.append((card_id, card_lang))
 
         if to_preload:
             self._preload_cards_meta(to_preload)
 
-        for slot, card_id, card_lang, card_var in slot_entries:
+        for slot, card_id, card_lang, card_var, sleeve_color in slot_entries:
             carta = self._get_card_meta(card_id, card_lang)
             if carta:
                 c_lang = carta.idioma or card_lang
@@ -3058,7 +3120,10 @@ class BinderView(QWidget):
                 if not pixmap or pixmap.isNull():
                     pixmap = get_card_placeholder_pixmap((cfg["card_w"], cfg["card_h"]), nombre)
 
-                slot.set_card(card_id, nombre_archivo, pixmap, idioma=c_lang, variante=card_var, carta=carta)
+                slot.set_card(
+                    card_id, nombre_archivo, pixmap,
+                    idioma=c_lang, variante=card_var, carta=carta, sleeve_color=sleeve_color,
+                )
 
     def update_slot_variant(self, page, slot, nueva_variante):
         target_mode = self.current_mode
@@ -3080,6 +3145,33 @@ class BinderView(QWidget):
         self.save_binder_data()
         show_toast(f"Variante en Binder guardada: {nueva_variante}", "info")
 
+    def update_slot_sleeve_color(self, page: int, slot: int, sleeve_color: str | None):
+        """Persiste o elimina el color de fondo (sleeve) de un bolsillo específico (Issue #78)."""
+        cards_dict = self._get_current_cards_dict(self.current_mode)
+        key = f"{page}_{slot}"
+        existing = cards_dict.get(key)
+
+        if isinstance(existing, dict):
+            if sleeve_color:
+                existing["sleeve_color"] = sleeve_color
+            else:
+                existing.pop("sleeve_color", None)
+            cards_dict[key] = existing
+        elif isinstance(existing, str):
+            if ":" in existing:
+                cid, clang = existing.split(":", 1)
+            else:
+                cid, clang = existing, "en"
+            entry = {"id_api": cid, "idioma": clang, "variante": "Normal"}
+            if sleeve_color:
+                entry["sleeve_color"] = sleeve_color
+            cards_dict[key] = entry
+        else:
+            return
+
+        self.save_binder_data()
+        show_toast(t("Fondo de carta actualizado") if sleeve_color else t("Fondo de carta quitado"), "info", 1600)
+
 
     def _get_visible_slot(self, page_idx: int, slot_idx: int):
         """Retorna el BinderSlot visible si page_idx está actualmente renderizado en pantalla."""
@@ -3091,6 +3183,13 @@ class BinderView(QWidget):
             target_page_widget = self.page_right
         if target_page_widget is not None and hasattr(target_page_widget, "get_slot"):
             return target_page_widget.get_slot(slot_idx)
+        return None
+
+    @staticmethod
+    def _extract_sleeve_color(card_info) -> str | None:
+        if isinstance(card_info, dict):
+            val = card_info.get("sleeve_color")
+            return str(val).strip() or None if val else None
         return None
 
     def _parse_card_entry(self, card_info) -> tuple[str | None, str, str]:
@@ -3114,9 +3213,10 @@ class BinderView(QWidget):
         if not slot_widget or not card_info:
             return
         card_id, card_lang, card_var = self._parse_card_entry(card_info)
+        sleeve_col = self._extract_sleeve_color(card_info)
         if not card_id:
             return
-        cfg = BINDER_MODES[self.current_mode]
+        cfg = BINDER_MODES.get(self.current_mode, BINDER_MODES["3x3"])
         carta = self._get_card_meta(card_id, card_lang)
         if carta:
             n_archivo = carta.nombre.lower().replace(" ", "_")
@@ -3131,7 +3231,8 @@ class BinderView(QWidget):
                 pixmap = get_card_placeholder_pixmap((cfg["card_w"], cfg["card_h"]), carta.nombre)
             slot_widget.set_card(
                 card_id, n_archivo, pixmap,
-                idioma=c_lang, variante=card_var, carta=carta, animate_insert=animate_insert
+                idioma=c_lang, variante=card_var, carta=carta,
+                animate_insert=animate_insert, sleeve_color=sleeve_col,
             )
 
     def get_used_card_counts_across_all_binders(self) -> tuple[dict[tuple[str, str], int], dict[str, int]]:

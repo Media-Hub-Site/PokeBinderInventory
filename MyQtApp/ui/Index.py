@@ -165,7 +165,10 @@ class MainWindow(QWidget):
         self.animaciones_activas = self.settings.get("animaciones", True)
         self.usuario = usuario
         self.setObjectName("MainBackground")
-        self.setWindowTitle(f"{t('Menú Principal')} - {t('Usuario:')} {usuario.capitalize()}")
+        title_str = f"PokeBinder — {usuario.capitalize()}"
+        self.setWindowTitle(title_str)
+        if self.window():
+            self.window().setWindowTitle(title_str)
 
         main_layout = QHBoxLayout(self)
 
@@ -373,7 +376,10 @@ class MainWindow(QWidget):
         language_manager.language_changed.connect(self.retranslate_ui)
 
     def retranslate_ui(self):
-        self.setWindowTitle(f"{t('Menú Principal')} - {t('Usuario:')} {self.usuario.capitalize()}")
+        title_str = f"PokeBinder — {self.usuario.capitalize()}"
+        self.setWindowTitle(title_str)
+        if self.window():
+            self.window().setWindowTitle(title_str)
         self.btn_buscar.setText(t("Buscar"))
         self.btn_ver_carpeta.setText(t("Binder"))
         self.btn_mi_coleccion.setText(t("Colecciones"))
@@ -511,7 +517,10 @@ class MainWindow(QWidget):
 
     def on_username_changed(self, new_username):
         self.usuario = new_username
-        self.setWindowTitle(f"{t('Menú Principal')} - {t('Usuario:')} {new_username.capitalize()}")
+        title_str = f"PokeBinder — {new_username.capitalize()}"
+        self.setWindowTitle(title_str)
+        if self.window():
+            self.window().setWindowTitle(title_str)
 
     def cambiar_cuenta(self):
         self._cancel_section_transition()

@@ -415,6 +415,13 @@ TRANSLATIONS = {
         "Français": "Tous",
         "Português": "Todos"
     },
+    "Limpiar Filtros": {
+        "Español": "Limpiar Filtros",
+        "English": "Clear Filters",
+        "日本語": "フィルター解除",
+        "Français": "Effacer les filtres",
+        "Português": "Limpar Filtros"
+    },
     "Anterior": {
         "Español": "⬅ Anterior",
         "English": "⬅ Previous",
@@ -632,6 +639,77 @@ TRANSLATIONS = {
         "日本語": "プログラムを終了しますか？",
         "Français": "Voulez-vous quitter le programme ?",
         "Português": "Deseja sair do programa?"
+    },
+    # ── Issues #77, #78, #79 (Expansión, Sleeve color, TopLoader Binder) ──
+    "Expansión": {
+        "Español": "Expansión",
+        "English": "Expansion",
+        "日本語": "拡張パック",
+        "Français": "Extension",
+        "Português": "Expansão"
+    },
+    "Filtrar por expansión de Pokémon TCG": {
+        "Español": "Filtrar por expansión de Pokémon TCG",
+        "English": "Filter by Pokémon TCG expansion",
+        "日本語": "ポケモンカード拡張パックで絞り込み",
+        "Français": "Filtrer par extension Pokémon JCC",
+        "Português": "Filtrar por expansão do Pokémon Estampas Ilustradas"
+    },
+    "Tipo de Binder": {
+        "Español": "Tipo de Binder",
+        "English": "Binder Type",
+        "日本語": "バインダータイプ",
+        "Français": "Type de classeur",
+        "Português": "Tipo de Fichário"
+    },
+    "TopLoader": {
+        "Español": "TopLoader",
+        "English": "TopLoader",
+        "日本語": "トップローダー",
+        "Français": "TopLoader",
+        "Português": "TopLoader"
+    },
+    "Cambiar color de fondo (sleeve)": {
+        "Español": "Cambiar color de fondo (sleeve)",
+        "English": "Change background color (sleeve)",
+        "日本語": "背景色（スリーブ）を変更",
+        "Français": "Changer la couleur de fond (sleeve)",
+        "Português": "Alterar cor de fundo (sleeve)"
+    },
+    "Más colores...": {
+        "Español": "Más colores...",
+        "English": "More colors...",
+        "日本語": "その他の色...",
+        "Français": "Plus de couleurs...",
+        "Português": "Mais cores..."
+    },
+    "Quitar fondo": {
+        "Español": "Quitar fondo",
+        "English": "Remove background",
+        "日本語": "背景色を削除",
+        "Français": "Retirer le fond",
+        "Português": "Remover fundo"
+    },
+    "Fondo de carta actualizado": {
+        "Español": "Fondo de carta actualizado",
+        "English": "Card background updated",
+        "日本語": "カードの背景色を更新しました",
+        "Français": "Fond de carte mis à jour",
+        "Português": "Fundo da carta atualizado"
+    },
+    "Fondo de carta quitado": {
+        "Español": "Fondo de carta quitado",
+        "English": "Card background removed",
+        "日本語": "カードの背景色を削除しました",
+        "Français": "Fond de carte retiré",
+        "Português": "Fundo da carta removido"
+    },
+    "Activa o desactiva la variante, burbuja de info, idioma y color de fondo (sleeve) en las cartas": {
+        "Español": "Activa o desactiva la variante, burbuja de info, idioma y color de fondo (sleeve) en las cartas",
+        "English": "Toggle variant, info bubble, language and sleeve background color on binder cards",
+        "日本語": "バインダー上のカードのバリエーション、情報アイコン、言語、スリーブ背景色の表示を切り替えます",
+        "Français": "Afficher ou masquer la variante, l'info, la langue et la couleur de sleeve sur les cartes",
+        "Português": "Ativa ou desativa variante, ícone de info, idioma e cor de sleeve nas cartas"
     }
 }
 

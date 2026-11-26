@@ -1,4 +1,4 @@
-# 🎴 Pokémon TCG Inventory & Binder Manager
+# 🎴 PokeBinder
 
 Una aplicación de escritorio moderna y avanzada desarrollada con **PyQt6** y **Python** para gestionar tu colección de cartas Pokémon TCG, organizar álbumes (binders) interactivos de formato personalizable y explorar más de **95,000 cartas en 6 idiomas** con renderizado 3D físico interactivo.
 
@@ -38,8 +38,8 @@ Una aplicación de escritorio moderna y avanzada desarrollada con **PyQt6** y **
 
 1. **Clonar el repositorio**:
    ```bash
-   git clone https://github.com/tu-usuario/TCG-Inventory.git
-   cd TCG-Inventory-appSystem
+   git clone https://github.com/Media-Hub-Site/PokeBinderInventory.git
+   cd PokeBinder
    ```
 
 2. **Crear y activar el entorno virtual**:
@@ -67,26 +67,24 @@ Para generar la versión ejecutable independiente lista para ser distribuida o i
 
 ```bash
 pyinstaller --noconfirm --onedir --windowed ^
-  --name "TCG-Inventory" ^
-  --icon "assets/icons/icono.ico" ^
+  --name "PokeBinder" ^
+  --icon "assets/icons/TCG_Logo.ico" ^
   --add-data "assets;assets" ^
   --add-data "PokeDatabase.db;." ^
   main.py
 ```
 
-La carpeta compilada se generará en `dist/TCG-Inventory/`.
+La carpeta compilada se generará en `dist/PokeBinder/`.
 
 ---
 
 ## 🛠️ Empaquetado con Inno Setup
 
-Para convertir la carpeta `dist/TCG-Inventory/` en un instalador ejecutable `.exe` para Windows:
+Para convertir la carpeta `dist/PokeBinder/` en un instalador ejecutable `.exe` para Windows:
 
 1. Instala **Inno Setup 6**.
-2. Selecciona `dist/TCG-Inventory/TCG-Inventory.exe` como el archivo ejecutable principal.
-3. Agrega todos los archivos y subcarpetas contenidos en `dist/TCG-Inventory/`.
-4. Define el destino de instalación en `{autopf}\TCG Inventory System`.
-5. Compila el script de Inno Setup para generar el instalador ejecutable final.
+2. Abre `installer.iss`.
+3. Compila el script de Inno Setup para generar el instalador ejecutable final `Output/PokeBinder-Setup.exe`.
 
 ---
 

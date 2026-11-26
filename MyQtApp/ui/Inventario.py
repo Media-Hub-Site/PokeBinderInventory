@@ -15,7 +15,10 @@ from ..app.getImgs import (
     get_pixmap_from_zip, get_webp_pixmap, get_card_placeholder_pixmap,
     CardImageLoaderManager
 )
-from MyQtApp.app.filtro import sort_filter_values, format_filter_option_label, apply_tag_filter
+from MyQtApp.app.filtro import (
+    sort_filter_values, format_filter_option_label, apply_tag_filter,
+    apply_expansion_filter, populate_expansion_combo,
+)
 from MyQtApp.app.price_updater import format_price, get_active_currency
 from MyQtApp.ui.CardWidget import ClickableLabel, CardItemWidget, VariantLegendBar, CardZoomOverlay
 from MyQtApp.ui.FilterVisualBar import EnergyTypeFilterBar
@@ -79,6 +82,7 @@ class GaleriaCartasInventario(QWidget):
         self.buscador.textChanged.connect(self.on_text_changed)
 
         self.btn_limpiar = QPushButton(t("Limpiar Filtros"))
+        self.btn_limpiar.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_limpiar.setProperty("class", "CleanBtn")
         self.btn_limpiar.clicked.connect(self.limpiar_filtros)
         row1.addWidget(self.btn_limpiar)
@@ -111,6 +115,7 @@ class GaleriaCartasInventario(QWidget):
             "Entrenador": "trainer",
             "Rareza": "rarity",
             "Tag": "tag",
+            "Expansión": "set_id",
         }
 
         for etiqueta, columna in campos.items():
@@ -118,6 +123,8 @@ class GaleriaCartasInventario(QWidget):
             combo.addItem(f"{t(etiqueta)}: {t('Todos')}", None)
             if columna == "tag":
                 combo.setToolTip(t("Tag (Etiqueta)"))
+            elif columna == "set_id":
+                combo.setToolTip(t("Filtrar por expansión de Pokémon TCG"))
             combo.setProperty("class", "FilterCombo")
             combo.currentIndexChanged.connect(self.reset_page_and_actualizar)
             self.filtros[columna] = combo
@@ -308,6 +315,14 @@ class GaleriaCartasInventario(QWidget):
         curr_lang = language_manager.current_language
         for columna, combo in self.filtros.items():
             prev_val = self._get_filter_value(combo)
+            if columna == "set_id":
+                populate_expansion_combo(
+                    combo,
+                    f"{t('Expansión')}: {t('Todos')}",
+                    curr_lang,
+                    selected_key=prev_val,
+                )
+                continue
             combo.blockSignals(True)
             while combo.count() > 1:
                 combo.removeItem(1)
@@ -855,6 +870,8 @@ class GaleriaCartasInventario(QWidget):
                 col_expr = getattr(Cartas, columna)
                 if columna == "tag":
                     q = apply_tag_filter(q, col_expr, val)
+                elif columna == "set_id":
+                    q = apply_expansion_filter(q, val)
                 else:
                     q = q.filter(col_expr == val)
 
@@ -950,6 +967,8 @@ class GaleriaCartasInventario(QWidget):
                 col_expr = getattr(Cartas, columna)
                 if columna == "tag":
                     q = apply_tag_filter(q, col_expr, val)
+                elif columna == "set_id":
+                    q = apply_expansion_filter(q, val)
                 else:
                     q = q.filter(col_expr == val)
 
@@ -1216,6 +1235,8 @@ class GaleriaCartasInventario(QWidget):
 
     def retranslate_ui(self):
         self.buscador.setPlaceholderText(t("Buscar carta por nombre..."))
+        if hasattr(self, 'btn_limpiar'):
+            self.btn_limpiar.setText(t("Limpiar Filtros"))
         self.btn_sync_precios.setText(t("Precios Real-Time"))
         if hasattr(self, 'btn_seleccionar_todo'):
             self.btn_seleccionar_todo.setText(t("Seleccionar Todo"))
@@ -1232,11 +1253,21 @@ class GaleriaCartasInventario(QWidget):
             ("Entrenador", "trainer"),
             ("Rareza", "rarity"),
             ("Tag", "tag"),
+            ("Expansión", "set_id"),
         ]
         for etiqueta, columna in campos_labels:
             if columna in self.filtros:
                 cb = self.filtros[columna]
                 selected_data = self._get_filter_value(cb)
+                if columna == "set_id":
+                    cb.setToolTip(t("Filtrar por expansión de Pokémon TCG"))
+                    populate_expansion_combo(
+                        cb,
+                        f"{t('Expansión')}: {t('Todos')}",
+                        curr_lang,
+                        selected_key=selected_data,
+                    )
+                    continue
                 cb.blockSignals(True)
                 if columna == "tag":
                     cb.setToolTip(t("Tag (Etiqueta)"))

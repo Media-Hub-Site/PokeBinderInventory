@@ -15,11 +15,11 @@ from MyQtApp.config import TCGDEX_LANG_MAP, SUPPORTED_CURRENCIES, normalize_lang
 from MyQtApp.app.getImgs import tcgdex_to_pokemontcg_id
 
 _HTTP_HEADERS = {
-    "User-Agent": "PokeBinder/2.3 (https://github.com/Media-Hub-Site/PokeBinderInventory)"
+    "User-Agent": "PokeBinder/2.4 (https://github.com/Media-Hub-Site/PokeBinderInventory)"
 }
 
 _TCGMATCH_PUBLIC_HEADERS = {
-    "User-Agent": "PokeBinder/2.3 (https://github.com/Media-Hub-Site/PokeBinderInventory)",
+    "User-Agent": "PokeBinder/2.4 (https://github.com/Media-Hub-Site/PokeBinderInventory)",
     "Origin": "https://tcgmatch.cl",
     "Referer": "https://tcgmatch.cl/",
 }

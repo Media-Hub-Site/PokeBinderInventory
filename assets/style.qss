@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════════════════════════
-   TCG Inventory — Design System (Light Theme)
+   PokeBinder — Design System (Light Theme)
    ─────────────────────────────────────────────────────────────
    Token Map:
      Heights   : btn-nav=44  btn-action=38  input=36  pagination=34  pill=34
@@ -198,6 +198,27 @@ QPushButton[class="SyncBtn"] {
 }
 QPushButton[class="SyncBtn"]:hover    { background-color: #0369a1; }
 QPushButton[class="SyncBtn"]:disabled { background-color: #94a3b8; color: #e2e8f0; }
+
+/* ── Botón de Limpiar Filtros ────────────────────────────────── */
+QPushButton[class="CleanBtn"] {
+    background-color: #ffffff;
+    color: #d66b78;
+    border: 2px solid #f7a8b8;
+    border-radius: 10px;
+    padding: 4px 14px;
+    font-weight: bold;
+    font-size: 13px;
+    min-height: 36px;
+    max-height: 36px;
+}
+QPushButton[class="CleanBtn"]:hover {
+    background-color: #fff7f8;
+    border-color: #f56b7b;
+    color: #c93b55;
+}
+QPushButton[class="CleanBtn"]:pressed {
+    background-color: #ffdfe6;
+}
 
 /* ── Etiqueta de Valor Total del Inventario ──────────────────── */
 QLabel[class="ValorTotalLabel"] {

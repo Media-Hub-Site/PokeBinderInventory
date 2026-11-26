@@ -11,7 +11,7 @@ from MyQtApp.config import apply_global_style
 class AppWindow(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("TCG Inventory Manager")
+        self.setWindowTitle("PokeBinder")
         
         # Obtener geometría centrada para la ventana de Login (520x520)
         self.setGeometry(self.get_centered_geometry(520, 520))
@@ -107,6 +107,7 @@ class AppWindow(QWidget):
         # Desbloquear límites de tamaño temporalmente para la animación
         self.setMinimumSize(0, 0)
         self.setMaximumSize(16777215, 16777215)
+        self.setWindowTitle(f"PokeBinder - {username.capitalize()}")
 
         # Crear la ventana principal (se agregará al stack al finalizar el fade-in para evitar saltos bruscos)
         self.main_window = MainWindow(username)
@@ -133,6 +134,7 @@ class AppWindow(QWidget):
         # Desbloquear límites de tamaño temporalmente para la animación
         self.setMinimumSize(0, 0)
         self.setMaximumSize(16777215, 16777215)
+        self.setWindowTitle("PokeBinder")
 
         if self.isFullScreen() or self.isMaximized():
             avail = (self.screen() or QApplication.primaryScreen()).availableGeometry()
@@ -321,6 +323,8 @@ def main():
         language_manager.set_language(chosen)
 
     app = QApplication(sys.argv)
+    app.setApplicationName("PokeBinder")
+    app.setApplicationDisplayName("PokeBinder")
 
     # Inicializar Base de datos (con autorrecuperación si SQLite sufrió daño previo)
     try:

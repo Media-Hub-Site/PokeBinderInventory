@@ -113,10 +113,12 @@ def _paint_binder_board_background(
     draw_rings: bool = True,
     hover_corner: str | None = None,
     interior_color: str | None = None,
+    binder_type: str = "normal",
 ):
     """Dibuja el cuerpo físico del binder abierto: tapas, grosor de hojas, fondo interior y anillas."""
     painter.save()
     painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    is_toploader = binder_type == "toploader"
 
     outer = rect.adjusted(6, 4, -6, -8)
     cx = outer.center().x()
@@ -137,13 +139,17 @@ def _paint_binder_board_background(
     board_path = QPainterPath()
     board_path.addRoundedRect(outer, 13, 13)
     painter.fillPath(board_path, board_grad)
-    painter.setPen(QPen(spine_color.darker(130), 1.6))
+    painter.setPen(QPen(QColor("#38bdf8") if is_toploader else spine_color.darker(130), 1.6))
     painter.drawPath(board_path)
 
-    # Costura perimetral estilo Ultra PRO
+    # Costura perimetral (Ultra PRO) o cierre zip metálico (TopLoader)
     stitch_rect = outer.adjusted(4.5, 4.5, -4.5, -4.5)
-    stitch_pen = QPen(QColor(255, 255, 255, 50), 1.0, Qt.PenStyle.DashLine)
-    stitch_pen.setDashPattern([4, 3])
+    if is_toploader:
+        stitch_pen = QPen(QColor(186, 230, 253, 95), 1.4, Qt.PenStyle.DashLine)
+        stitch_pen.setDashPattern([2.5, 2.5])
+    else:
+        stitch_pen = QPen(QColor(255, 255, 255, 50), 1.0, Qt.PenStyle.DashLine)
+        stitch_pen.setDashPattern([4, 3])
     painter.setPen(stitch_pen)
     painter.setBrush(Qt.BrushStyle.NoBrush)
     painter.drawRoundedRect(stitch_rect, 10, 10)
@@ -151,11 +157,12 @@ def _paint_binder_board_background(
     # 3. Grosor 3D de hojas apiladas en los bordes exteriores (izquierdo y derecho)
     inner = outer.adjusted(12, 9, -12, -9)
     for layer in range(3):
-        offset = (3 - layer) * 2.0
-        alpha = 155 - layer * 25
+        offset = (3 - layer) * (2.4 if is_toploader else 2.0)
+        alpha = (175 if is_toploader else 155) - layer * 25
         # Borde izquierdo apilado
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(235, 232, 238, alpha))
+        edge_col = QColor(210, 236, 252, alpha) if is_toploader else QColor(235, 232, 238, alpha)
+        painter.setBrush(edge_col)
         painter.drawRoundedRect(
             QRectF(inner.left() - offset, inner.top() + layer * 1.2, 4.0, inner.height() - layer * 2.4),
             1.5, 1.5
@@ -241,10 +248,11 @@ class BinderSpreadFrame(QWidget):
     drag_turn_moved = pyqtSignal(float)          # current_x_local
     drag_turn_released = pyqtSignal(float)       # end_x_local
 
-    def __init__(self, design="Charizard Fuego", color="auto", can_go_prev=False, interior_color=None, parent=None):
+    def __init__(self, design="Charizard Fuego", color="auto", can_go_prev=False, interior_color=None, binder_type="normal", parent=None):
         super().__init__(parent)
         self.base_color, self.spine_color, self.accent_color = resolve_binder_palette(design, color)
         self.interior_color = interior_color
+        self.binder_type = "toploader" if binder_type == "toploader" else "normal"
         self.can_go_prev = can_go_prev
         self._hover_corner = None
         self._dragging_turn = False
@@ -302,6 +310,7 @@ class BinderSpreadFrame(QWidget):
             draw_rings=True,
             hover_corner=self._hover_corner,
             interior_color=self.interior_color,
+            binder_type=getattr(self, "binder_type", "normal"),
         )
 
     def _detect_edge_zone(self, pos: QPoint) -> str | None:
@@ -710,7 +719,8 @@ class PageFlipAnimationOverlay(QWidget):
 
 def render_transparent_cover_pixmap(
     name: str, design: str, color: str, mode: str, width: int, height: int,
-    custom_image: str = None, locked: bool = False, advanced_design: dict = None
+    custom_image: str = None, locked: bool = False, advanced_design: dict = None,
+    binder_type: str = "normal"
 ) -> QPixmap:
     """Renderiza la portada física BinderCoverWidget sobre un QPixmap transparente (sin bordes blancos)."""
     from MyQtApp.ui.BinderCoverWidget import BinderCoverWidget
@@ -722,7 +732,8 @@ def render_transparent_cover_pixmap(
 
     temp = BinderCoverWidget(
         name=name, design=design, color=color, mode=mode,
-        custom_image=custom_image, locked=locked, advanced_design=advanced_design
+        custom_image=custom_image, locked=locked, advanced_design=advanced_design,
+        binder_type=binder_type,
     )
     temp.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
     temp.resize(w, h)

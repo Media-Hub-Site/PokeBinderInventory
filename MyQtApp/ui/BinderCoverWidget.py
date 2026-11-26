@@ -201,6 +201,7 @@ class BinderCoverWidget(QWidget):
         custom_image: str = None,
         locked: bool = False,
         advanced_design: dict = None,
+        binder_type: str = "normal",
         parent=None,
     ):
         super().__init__(parent)
@@ -212,6 +213,7 @@ class BinderCoverWidget(QWidget):
         self._custom_pixmap = resolve_custom_cover_pixmap(self._custom_image)
         self._locked = bool(locked)
         self._advanced_design = normalize_advanced_design(advanced_design)
+        self._binder_type = "toploader" if binder_type == "toploader" else "normal"
         self._hovered = False
         self._hover_progress = 0.0
         self._hover_anim = None
@@ -227,6 +229,7 @@ class BinderCoverWidget(QWidget):
         custom_image="UNSET",
         locked: bool = None,
         advanced_design="UNSET",
+        binder_type: str = None,
     ):
         if name is not None:
             self._name = name or "Mi Binder"
@@ -243,6 +246,8 @@ class BinderCoverWidget(QWidget):
             self._locked = bool(locked)
         if advanced_design != "UNSET":
             self._advanced_design = normalize_advanced_design(advanced_design)
+        if binder_type is not None:
+            self._binder_type = "toploader" if binder_type == "toploader" else "normal"
         self.update()
 
     def set_hovered(self, hovered: bool):
@@ -295,13 +300,14 @@ class BinderCoverWidget(QWidget):
         w = float(self.width())
         h = float(self.height())
         hp = self._hover_progress
+        is_toploader = getattr(self, "_binder_type", "normal") == "toploader"
         margin_x = 10.0
         margin_y = 9.0
-        pages_thickness = 7.0 + 2.8 * hp
+        pages_thickness = (10.0 if is_toploader else 7.0) + 2.8 * hp
 
         cover_x = margin_x - 2.2 * hp
         cover_y = margin_y - 5.5 * hp
-        cover_w = w - margin_x * 2 - 7.0
+        cover_w = w - margin_x * 2 - (9.0 if is_toploader else 7.0)
         cover_h = h - margin_y * 2 - 4.0
 
         cfg, base, spine, strap, accent, accent2 = self._effective_colors()
@@ -324,15 +330,20 @@ class BinderCoverWidget(QWidget):
 
         pages_rect = QRectF(cover_x + cover_w - 6, cover_y + 5, pages_thickness + 4, cover_h - 8)
         page_grad = QLinearGradient(pages_rect.left(), 0, pages_rect.right(), 0)
-        page_grad.setColorAt(0.0, QColor("#e2e8f0"))
-        page_grad.setColorAt(0.5, QColor("#ffffff"))
-        page_grad.setColorAt(1.0, QColor("#cbd5e1"))
+        if is_toploader:
+            page_grad.setColorAt(0.0, QColor("#bae6fd"))
+            page_grad.setColorAt(0.5, QColor("#f0f9ff"))
+            page_grad.setColorAt(1.0, QColor("#dbeafe"))
+        else:
+            page_grad.setColorAt(0.0, QColor("#e2e8f0"))
+            page_grad.setColorAt(0.5, QColor("#ffffff"))
+            page_grad.setColorAt(1.0, QColor("#cbd5e1"))
         painter.setBrush(page_grad)
         painter.drawRoundedRect(pages_rect, 4, 4)
 
-        # Líneas finas de hojas internas
-        painter.setPen(QPen(QColor(148, 163, 184, 130), 0.7))
-        for offset in (2.0, 4.0, 6.0):
+        # Líneas finas de hojas internas (más espaciadas si son toploaders gruesos)
+        painter.setPen(QPen(QColor(56, 189, 248, 160) if is_toploader else QColor(148, 163, 184, 130), 0.9 if is_toploader else 0.7))
+        for offset in ((2.0, 5.0, 8.0) if is_toploader else (2.0, 4.0, 6.0)):
             lx = cover_x + cover_w + offset - 1.5
             painter.drawLine(QPointF(lx, cover_y + 8), QPointF(lx, cover_y + cover_h - 6))
 
@@ -468,17 +479,39 @@ class BinderCoverWidget(QWidget):
             elided_name,
         )
 
-        # Subtítulo con formato de bolsillos
+        # Subtítulo con formato de bolsillos y tipo (Pro-Binder vs TopLoader)
         sub_font = QFont("Segoe UI", 7, QFont.Weight.DemiBold)
         painter.setFont(sub_font)
-        painter.setPen(QColor("#e2e8f0"))
+        painter.setPen(QColor("#7dd3fc") if is_toploader else QColor("#e2e8f0"))
+        kind_tag = "TOPLOADER" if is_toploader else "PRO-BINDER"
         painter.drawText(
             QRectF(plate_rect.left() + 6, plate_rect.top() + 22, plate_rect.width() - 12, 16),
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-            f"PRO-BINDER  |  {self._mode}",
+            f"{kind_tag}  |  {self._mode}",
         )
 
-        # 7d. Textos libres del usuario e indicador de bloqueo en la capa superior final
+        # 7d. Costura/cremallera e insignia superior 'TOPLOADER' si corresponde (Issue #79)
+        if is_toploader:
+            zip_pen = QPen(QColor(186, 230, 253, 135), 1.4, Qt.PenStyle.DashLine)
+            zip_pen.setDashPattern([2.5, 2.5])
+            painter.setPen(zip_pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            zip_margin = 3.5
+            painter.drawLine(QPointF(cover_x + spine_w + 2, cover_y + zip_margin), QPointF(cover_x + cover_w - zip_margin, cover_y + zip_margin))
+            painter.drawLine(QPointF(cover_x + cover_w - zip_margin, cover_y + zip_margin), QPointF(cover_x + cover_w - zip_margin, cover_y + cover_h - zip_margin))
+            painter.drawLine(QPointF(cover_x + spine_w + 2, cover_y + cover_h - zip_margin), QPointF(cover_x + cover_w - zip_margin, cover_y + cover_h - zip_margin))
+
+            badge_w = min(74.0, max(54.0, cover_w * 0.42))
+            badge_rect = QRectF(cover_x + spine_w + 6.0, cover_y + 8.0, badge_w, 16.0)
+            painter.setPen(QPen(QColor("#7dd3fc"), 1.0))
+            painter.setBrush(QColor(12, 74, 110, 215))
+            painter.drawRoundedRect(badge_rect, 4, 4)
+            tl_font = QFont("Segoe UI", 6, QFont.Weight.Bold)
+            painter.setFont(tl_font)
+            painter.setPen(QColor("#e0f2fe"))
+            painter.drawText(badge_rect, Qt.AlignmentFlag.AlignCenter, "TOPLOADER")
+
+        # 7e. Textos libres del usuario e indicador de bloqueo en la capa superior final
         if text_elements:
             render_advanced_elements(painter, cover_rect, text_elements)
 

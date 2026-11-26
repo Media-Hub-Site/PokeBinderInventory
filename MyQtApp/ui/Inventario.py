@@ -1159,6 +1159,7 @@ class GaleriaCartasInventario(QWidget):
         else:
             center_pt = vp.mapToGlobal(vp.rect().center())
             origin_rect = QRect(center_pt.x() - 60, center_pt.y() - 85, 120, 170)
+        var_item = self.list_table.item(row, 5)
         overlay = CardZoomOverlay(win)
         overlay.show_zoom(
             pix,
@@ -1168,6 +1169,12 @@ class GaleriaCartasInventario(QWidget):
             set_id=getattr(carta, "set_id", None),
             number=getattr(carta, "number", None),
             idioma=c_lang,
+            rarity=getattr(carta, "rarity", None),
+            especial_type=getattr(carta, "especial_type", None),
+            variante=var_item.text() if var_item else None,
+            tag=getattr(carta, "tag", None),
+            stage=getattr(carta, "stage", None),
+            trainer=getattr(carta, "trainer", None),
         )
 
     def _on_zoom_changed(self, size_key: str):

@@ -8,6 +8,7 @@ from PyQt6.QtCore import Qt, QPointF, QRectF
 from PyQt6.QtGui import (
     QBrush,
     QColor,
+    QImage,
     QLinearGradient,
     QPainter,
     QPainterPath,
@@ -15,6 +16,12 @@ from PyQt6.QtGui import (
     QPolygonF,
     QRadialGradient,
 )
+
+from MyQtApp.ui.card_holo_masks import get_scaled_mask_qimage
+
+# Controla si las funciones de perfil reciben recorte mediante máscara externa
+_USING_EXTERNAL_FOIL_MASK: bool = False
+_HOLO_BUF_CACHE: dict[tuple[int, int], QImage] = {}
 
 # Catálogo oficial de perfiles visuales (21 perfiles distintos)
 HOLO_PROFILES: dict[str, dict[str, str]] = {
@@ -490,10 +497,14 @@ def _paint_reverse_holo(
 ):
     """Brillo metálico cepillado en marco/cuerpo respetando recorte de ventana de arte."""
     cx, cy, cw, ch = rect.x(), rect.y(), rect.width(), rect.height()
-    art_rect = QRectF(cx + 0.08 * cw, cy + 0.12 * ch, 0.84 * cw, 0.39 * ch)
-    art_hole = QPainterPath()
-    art_hole.addRoundedRect(art_rect, 4.0, 4.0)
-    frame_path = clip_path.subtracted(art_hole)
+    if _USING_EXTERNAL_FOIL_MASK:
+        art_rect = None
+        frame_path = clip_path
+    else:
+        art_rect = QRectF(cx + 0.08 * cw, cy + 0.12 * ch, 0.84 * cw, 0.39 * ch)
+        art_hole = QPainterPath()
+        art_hole.addRoundedRect(art_rect, 4.0, 4.0)
+        frame_path = clip_path.subtracted(art_hole)
 
     painter.setClipPath(frame_path)
     painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Screen)
@@ -530,12 +541,13 @@ def _paint_reverse_holo(
         color_mid=QColor(255, 255, 255, int(115 * eff)),
     )
 
-    # Filete sutil marcando el contorno de la ventana de arte
-    painter.setClipping(True)
-    painter.setClipPath(clip_path)
-    painter.setPen(QPen(QColor(226, 232, 240, int(85 * eff)), 1.2))
-    painter.setBrush(Qt.BrushStyle.NoBrush)
-    painter.drawRoundedRect(art_rect, 4.0, 4.0)
+    if art_rect is not None:
+        # Filete sutil marcando el contorno de la ventana de arte
+        painter.setClipping(True)
+        painter.setClipPath(clip_path)
+        painter.setPen(QPen(QColor(226, 232, 240, int(85 * eff)), 1.2))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRoundedRect(art_rect, 4.0, 4.0)
 
 
 def _paint_rare_holo(
@@ -550,10 +562,14 @@ def _paint_rare_holo(
     cx, cy, cw, ch = rect.x(), rect.y(), rect.width(), rect.height()
     eff = 0.22 + 0.78 * tilt
 
-    art_rect = QRectF(cx + 0.08 * cw, cy + 0.12 * ch, 0.84 * cw, 0.39 * ch)
-    art_path = QPainterPath()
-    art_path.addRoundedRect(art_rect, 4.0, 4.0)
-    art_clip = clip_path.intersected(art_path)
+    if _USING_EXTERNAL_FOIL_MASK:
+        art_rect = rect
+        art_clip = clip_path
+    else:
+        art_rect = QRectF(cx + 0.08 * cw, cy + 0.12 * ch, 0.84 * cw, 0.39 * ch)
+        art_path = QPainterPath()
+        art_path.addRoundedRect(art_rect, 4.0, 4.0)
+        art_clip = clip_path.intersected(art_path)
 
     painter.setClipPath(art_clip)
     painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Screen)
@@ -1496,6 +1512,46 @@ _PROFILE_PAINTERS = {
 }
 
 
+def _get_holo_buffer(bw: int, bh: int) -> QImage:
+    """Obtiene o reutiliza un búfer QImage ARGB32 premultiplicado del tamaño de la carta."""
+    key = (bw, bh)
+    buf = _HOLO_BUF_CACHE.get(key)
+    if buf is None or buf.isNull():
+        if len(_HOLO_BUF_CACHE) >= 4:
+            oldest = next(iter(_HOLO_BUF_CACHE))
+            _HOLO_BUF_CACHE.pop(oldest, None)
+        buf = QImage(bw, bh, QImage.Format.Format_ARGB32_Premultiplied)
+        _HOLO_BUF_CACHE[key] = buf
+    buf.fill(Qt.GlobalColor.transparent)
+    return buf
+
+
+def _paint_cardstock_sheen(
+    painter: QPainter,
+    clip_path: QPainterPath,
+    rect: QRectF,
+    nx: float,
+    ny: float,
+    tilt: float,
+):
+    """Brillo físico sutil de cartón inclinado sin lavar las tintas mate."""
+    cx, cy, cw, ch = rect.x(), rect.y(), rect.width(), rect.height()
+    gx = cx + (0.5 + 0.34 * nx) * cw
+    gy = cy + (0.5 + 0.34 * ny) * ch
+    peak_alpha = min(14, int(4 + 10 * tilt))
+    mid_alpha = min(6, int(2 + 4 * tilt))
+    sheen = QRadialGradient(gx, gy, max(cw, ch) * 0.88)
+    sheen.setColorAt(0.0, QColor(255, 252, 246, peak_alpha))
+    sheen.setColorAt(0.5, QColor(255, 252, 246, mid_alpha))
+    sheen.setColorAt(1.0, QColor(255, 252, 246, 0))
+    painter.setClipPath(clip_path)
+    painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Screen)
+    painter.setOpacity(1.0)
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(sheen)
+    painter.drawRect(rect)
+
+
 def paint_card_holo_effect(
     painter: QPainter,
     clip_path: QPainterPath,
@@ -1503,8 +1559,10 @@ def paint_card_holo_effect(
     rot_x: float,
     rot_y: float,
     profile_info: dict | str | None,
+    foil_mask: QImage | None = None,
 ):
     """Pinta el efecto holográfico selectivo sobre la carta usando QPainter puro a 60 FPS."""
+    global _USING_EXTERNAL_FOIL_MASK
     if rect.width() <= 1.0 or rect.height() <= 1.0:
         return
 
@@ -1523,8 +1581,49 @@ def paint_card_holo_effect(
 
     paint_fn = _PROFILE_PAINTERS.get(profile_key, _paint_matte_none)
 
+    if foil_mask is None or foil_mask.isNull() or profile_key == "matte_none":
+        painter.save()
+        try:
+            paint_fn(painter, clip_path, rect, nx, ny, tilt)
+        finally:
+            painter.restore()
+        return
+
+    bw = max(1, int(round(rect.width())))
+    bh = max(1, int(round(rect.height())))
+    buf = _get_holo_buffer(bw, bh)
+    local_rect = QRectF(0.0, 0.0, float(bw), float(bh))
+    local_clip = QPainterPath()
+    local_clip.addRoundedRect(local_rect, 14.0, 14.0)
+
+    bp = QPainter(buf)
+    bp.setRenderHint(QPainter.RenderHint.Antialiasing)
+    bp.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+    _USING_EXTERNAL_FOIL_MASK = True
+    try:
+        paint_fn(bp, local_clip, local_rect, nx, ny, tilt)
+        scaled_mask = get_scaled_mask_qimage(foil_mask, bw, bh)
+        bp.setClipping(False)
+        bp.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
+        bp.drawImage(0, 0, scaled_mask)
+    finally:
+        _USING_EXTERNAL_FOIL_MASK = False
+        bp.end()
+
     painter.save()
     try:
-        paint_fn(painter, clip_path, rect, nx, ny, tilt)
+        painter.setClipPath(clip_path)
+        # 1. Tinte iridiscente sutil (hace visibles los destellos sobre fondos blancos puros)
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
+        painter.setOpacity(0.28)
+        painter.drawImage(rect, buf)
+
+        # 2. Haz especular luminoso en zonas no enmascaradas (cero sangrado en zonas mate)
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Screen)
+        painter.setOpacity(0.92)
+        painter.drawImage(rect, buf)
+
+        # 3. Reflejo difuso físico muy suave sobre el cartón inclinado
+        _paint_cardstock_sheen(painter, clip_path, rect, nx, ny, tilt)
     finally:
         painter.restore()

@@ -40,6 +40,8 @@ def get_user_data_dir() -> str:
 USER_DATA_DIR = get_user_data_dir()
 BACKUPS_DIR = os.path.join(USER_DATA_DIR, "backups")
 os.makedirs(BACKUPS_DIR, exist_ok=True)
+HOLO_MASKS_DIR = os.path.join(USER_DATA_DIR, "holo_masks")
+os.makedirs(HOLO_MASKS_DIR, exist_ok=True)
 
 # Carpeta de imágenes descargadas (en la ruta del ejecutable para aprovechar assets-v1 del launcher)
 IMAGES_DIR = os.path.join(EXE_DIR, "assets", "images")

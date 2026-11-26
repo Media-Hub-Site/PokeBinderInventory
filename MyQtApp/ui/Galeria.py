@@ -587,6 +587,11 @@ class GaleriaCartas(QWidget):
             set_id=getattr(carta, "set_id", None),
             number=getattr(carta, "number", None),
             idioma=c_lang,
+            rarity=getattr(carta, "rarity", None),
+            especial_type=getattr(carta, "especial_type", None),
+            tag=getattr(carta, "tag", None),
+            stage=getattr(carta, "stage", None),
+            trainer=getattr(carta, "trainer", None),
         )
 
     def _on_zoom_changed(self, size_key: str):

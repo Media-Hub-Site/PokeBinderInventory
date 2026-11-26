@@ -5,7 +5,7 @@ from PyQt6.QtWidgets import (
     QDialog, QFrame, QScrollArea, QMenu
 )
 from PyQt6.QtGui import (
-    QPixmap, QCursor, QColor, QPainter, QPainterPath, QTransform,
+    QPixmap, QImage, QCursor, QColor, QPainter, QPainterPath, QTransform,
     QRadialGradient, QLinearGradient, QPen, QBrush, QIcon, QAction
 )
 from PyQt6.QtCore import (
@@ -29,6 +29,9 @@ from MyQtApp.session import SessionLocal
 from MyQtApp.models import Cartas
 from MyQtApp.ui.pixmap_cache import get_cached_pixmap, scale_cached_pixmap
 from MyQtApp.ui.card_holo_effects import resolve_holo_profile, paint_card_holo_effect
+from MyQtApp.ui.card_holo_masks import (
+    get_initial_foil_mask, HoloMaskWorker, get_profile_zone_tooltip
+)
 
 # Referencias fuertes a QThreads desacoplados en ejecución para evitar
 # "QThread: Destroyed while thread '' is still running" al cerrar diálogos/overlays
@@ -436,6 +439,11 @@ class InteractiveCard3DWidget(QWidget):
         self._card_h = 476
         self._is_dragging = False
         self._holo_profile = resolve_holo_profile(None)
+        self._foil_mask: QImage | None = None
+        self._mask_cache_key: str = ""
+        self._mask_req_seq: int = 0
+        self._card_meta: dict = {}
+        self._is_hd_pixmap: bool = False
 
         # Temporizador a 60 FPS para suavizado de inercia y física de masa
         self._physics_timer = QTimer(self)
@@ -472,19 +480,107 @@ class InteractiveCard3DWidget(QWidget):
         self._flip_angle = float(val)
         self.update()
 
-    def set_front_pixmap(self, pixmap: QPixmap):
+    def set_front_pixmap(self, pixmap: QPixmap, is_hd: bool = False):
         self._front_pixmap = pixmap
+        self._is_hd_pixmap = bool(is_hd)
+        self._refresh_foil_mask()
         self.update()
 
-    def set_card_metadata(self, rarity=None, especial_type=None, variante=None, tag=None):
-        """Actualiza el perfil holográfico 3D según rareza, rule-box, variante y tag."""
+    def set_card_metadata(
+        self,
+        rarity=None,
+        especial_type=None,
+        variante=None,
+        tag=None,
+        id_api=None,
+        idioma=None,
+        stage=None,
+        trainer=None,
+        set_id=None,
+    ):
+        """Actualiza el perfil holográfico 3D y la máscara física según los metadatos de la carta."""
         self._holo_profile = resolve_holo_profile(
             rarity=rarity,
             especial_type=especial_type,
             variante=variante,
             tag=tag,
         )
+        self._card_meta = {
+            "rarity": rarity,
+            "especial_type": especial_type,
+            "variante": variante,
+            "tag": tag,
+            "id_api": id_api,
+            "idioma": idioma,
+            "stage": stage,
+            "trainer": trainer,
+            "set_id": set_id,
+        }
+        self._refresh_foil_mask()
         self.update()
+
+    def _refresh_foil_mask(self):
+        """Obtiene la máscara Nivel-1 o de caché y lanza refinamiento IA en segundo plano si aplica."""
+        self._mask_req_seq += 1
+        req_seq = self._mask_req_seq
+
+        profile_key = (
+            self._holo_profile.get("profile", "matte_none")
+            if isinstance(self._holo_profile, dict)
+            else "matte_none"
+        )
+        if profile_key == "matte_none" or self._front_pixmap is None or self._front_pixmap.isNull():
+            self._foil_mask = None
+            self._mask_cache_key = ""
+            return
+
+        meta = self._card_meta
+        mask_qimg, is_final, cache_key = get_initial_foil_mask(
+            self._front_pixmap,
+            id_api=meta.get("id_api"),
+            idioma=meta.get("idioma"),
+            profile_key=profile_key,
+            rarity=meta.get("rarity"),
+            especial_type=meta.get("especial_type"),
+            stage=meta.get("stage"),
+            set_id=meta.get("set_id"),
+            is_hd=self._is_hd_pixmap,
+        )
+        self._foil_mask = mask_qimg
+        self._mask_cache_key = cache_key
+
+        if not is_final and mask_qimg is not None:
+            front_qimg = self._front_pixmap.toImage().copy()
+            worker = HoloMaskWorker(
+                front_qimg,
+                cache_key=cache_key,
+                id_api=meta.get("id_api"),
+                idioma=meta.get("idioma"),
+                profile_key=profile_key,
+                rarity=meta.get("rarity"),
+                especial_type=meta.get("especial_type"),
+                stage=meta.get("stage"),
+                set_id=meta.get("set_id"),
+                is_hd=self._is_hd_pixmap,
+                parent=None,
+            )
+
+            def _on_mask_ready(ready_key: str, refined_mask: QImage, seq: int = req_seq):
+                try:
+                    if (
+                        seq == self._mask_req_seq
+                        and ready_key == self._mask_cache_key
+                        and refined_mask is not None
+                        and not refined_mask.isNull()
+                    ):
+                        self._foil_mask = refined_mask
+                        self.update()
+                except RuntimeError:
+                    pass
+
+            worker.mask_ready.connect(_on_mask_ready)
+            _track_detached_thread(worker)
+            worker.start()
 
     def flip_card(self):
         target = 180.0 if self._flip_angle < 90.0 else 0.0
@@ -640,6 +736,7 @@ class InteractiveCard3DWidget(QWidget):
                 self._rot_x,
                 self._rot_y,
                 self._holo_profile,
+                foil_mask=self._foil_mask,
             )
 
 
@@ -774,11 +871,21 @@ class CardZoomOverlay(QWidget):
             f" font-weight: 700;"
             f"}}"
         )
+        self.effect_badge.setToolTip(get_profile_zone_tooltip(prof))
         self.effect_badge.adjustSize()
 
     @staticmethod
-    def _fetch_card_zoom_metadata(id_api: str, idioma: str | None, rarity, especial_type, tag):
-        """Consulta defensivamente idioma, rareza, rule-box y tag desde SQLite."""
+    def _fetch_card_zoom_metadata(
+        id_api: str,
+        idioma: str | None,
+        rarity,
+        especial_type,
+        tag,
+        stage=None,
+        trainer=None,
+        set_id=None,
+    ):
+        """Consulta defensivamente idioma, rareza, rule-box, tag, etapa, entrenador y set desde SQLite."""
         session = None
         try:
             session = SessionLocal()
@@ -796,10 +903,17 @@ class CardZoomOverlay(QWidget):
                         especial_type = getattr(c_db, "especial_type", None)
                     if tag is None:
                         tag = getattr(c_db, "tag", None)
+                    if stage is None:
+                        stage = getattr(c_db, "stage", None)
+                    if trainer is None:
+                        trainer = getattr(c_db, "trainer", None)
+                    if not set_id and getattr(c_db, "set_id", None):
+                        set_id = c_db.set_id
             except Exception:
-                q_cols = session.query(Cartas.idioma, Cartas.rarity, Cartas.especial_type).filter(
-                    Cartas.id_api == id_api
-                )
+                q_cols = session.query(
+                    Cartas.idioma, Cartas.rarity, Cartas.especial_type,
+                    Cartas.stage, Cartas.trainer, Cartas.set_id,
+                ).filter(Cartas.id_api == id_api)
                 row = q_cols.filter(Cartas.idioma == idioma).first() if idioma else None
                 if row is None:
                     row = q_cols.first()
@@ -810,6 +924,12 @@ class CardZoomOverlay(QWidget):
                         rarity = row[1]
                     if especial_type is None:
                         especial_type = row[2]
+                    if stage is None:
+                        stage = row[3]
+                    if trainer is None:
+                        trainer = row[4]
+                    if not set_id and row[5]:
+                        set_id = row[5]
         except Exception:
             pass
         finally:
@@ -818,7 +938,7 @@ class CardZoomOverlay(QWidget):
                     session.close()
                 except Exception:
                     pass
-        return idioma, rarity, especial_type, tag
+        return idioma, rarity, especial_type, tag, stage, trainer, set_id
 
     def show_zoom(
         self,
@@ -833,13 +953,23 @@ class CardZoomOverlay(QWidget):
         especial_type: str = None,
         variante: str = None,
         tag: str = None,
+        stage: str = None,
+        trainer: str = None,
     ):
         if not self.parent_window or pixmap.isNull():
             return
 
-        if id_api and (not idioma or rarity is None or especial_type is None or tag is None):
-            idioma, rarity, especial_type, tag = self._fetch_card_zoom_metadata(
-                id_api, idioma, rarity, especial_type, tag
+        if id_api and (
+            not idioma
+            or rarity is None
+            or especial_type is None
+            or tag is None
+            or stage is None
+            or trainer is None
+            or not set_id
+        ):
+            idioma, rarity, especial_type, tag, stage, trainer, set_id = self._fetch_card_zoom_metadata(
+                id_api, idioma, rarity, especial_type, tag, stage, trainer, set_id
             )
 
         self._current_id_api = id_api
@@ -864,16 +994,25 @@ class CardZoomOverlay(QWidget):
         max_h = min(int(avail_h * 0.82), 450)
         max_w = int(max_h * (2.5 / 3.5))
 
+        card_lang = idioma or language_manager.current_language
+        existing_hd = get_hd_pixmap(id_api, nombre_archivo, card_lang) if id_api else None
+        has_local_hd = bool(existing_hd and not existing_hd.isNull())
+
         self.card_3d.set_card_metadata(
             rarity=rarity,
             especial_type=especial_type,
             variante=variante,
             tag=tag,
+            id_api=id_api,
+            idioma=card_lang,
+            stage=stage,
+            trainer=trainer,
+            set_id=set_id,
         )
         self._update_effect_badge(self.card_3d._holo_profile)
         self.controls_widget.adjustSize()
 
-        self.card_3d.set_front_pixmap(pixmap)
+        self.card_3d.set_front_pixmap(existing_hd if has_local_hd else pixmap, is_hd=has_local_hd)
         self.card_3d.set_card_size(max_w, max_h)
 
         # Mapear posición de inicio a coordenadas locales de este overlay
@@ -932,16 +1071,11 @@ class CardZoomOverlay(QWidget):
 
         # Iniciar carga/descarga de imagen Full HD (.png) en segundo plano en assets/images_hd
         if id_api:
-            card_lang = idioma or language_manager.current_language
-
-            # 1. Comprobar si ya existe la versión HD en PNG guardada localmente en assets/images_hd
-            existing_hd = get_hd_pixmap(id_api, nombre_archivo, card_lang)
-            if existing_hd and not existing_hd.isNull():
-                self.card_3d.set_front_pixmap(existing_hd)
+            if has_local_hd:
                 if hasattr(self, 'lbl_loading'):
                     self.lbl_loading.hide()
             else:
-                # 2. Si no existe en HD, mostrar "Cargando carta en HD..." e iniciar descarga
+                # Si no existe en HD, mostrar "Cargando carta en HD..." e iniciar descarga
                 if hasattr(self, 'lbl_loading'):
                     self.lbl_loading.setText("⏳ Cargando carta en HD...")
                     self.lbl_loading.adjustSize()
@@ -969,7 +1103,7 @@ class CardZoomOverlay(QWidget):
         if self._closing or returned_id_api != self._current_id_api or hd_pixmap.isNull():
             return
 
-        self.card_3d.set_front_pixmap(hd_pixmap)
+        self.card_3d.set_front_pixmap(hd_pixmap, is_hd=True)
         if hasattr(self, 'lbl_loading'):
             self.lbl_loading.hide()
 
@@ -1083,6 +1217,8 @@ class ClickableLabel(QLabel):
         especial_type = None
         variante = None
         tag = None
+        stage = None
+        trainer = None
 
         if self.id_carta:
             parent_widget = self.parent()
@@ -1095,6 +1231,8 @@ class ClickableLabel(QLabel):
             rarity = getattr(carta_obj, 'rarity', None)
             especial_type = getattr(carta_obj, 'especial_type', None)
             tag = getattr(carta_obj, 'tag', None)
+            stage = getattr(carta_obj, 'stage', None)
+            trainer = getattr(carta_obj, 'trainer', None)
             if nombre:
                 nombre_archivo = nombre.lower().replace(" ", "_")
                 set_id = getattr(carta_obj, 'set_id', None)
@@ -1122,6 +1260,8 @@ class ClickableLabel(QLabel):
                 especial_type=especial_type,
                 variante=variante,
                 tag=tag,
+                stage=stage,
+                trainer=trainer,
             )
 
     def ejecutar_animacion_burbuja(self):

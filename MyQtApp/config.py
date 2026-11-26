@@ -125,29 +125,91 @@ SETTINGS_FILE = os.path.join(USER_DATA_DIR, "settings.json")
 BINDER_DATA_FILE = os.path.join(USER_DATA_DIR, "binder_data.json")
 
 
+def _find_latest_healthy_backup_db(backups_dir: str) -> str | None:
+    """Devuelve el respaldo SQLite sano más reciente en `backups_dir`, priorizando uno con cuentas."""
+    if not backups_dir or not os.path.isdir(backups_dir):
+        return None
+    import sqlite3
+
+    candidates = []
+    try:
+        for fname in os.listdir(backups_dir):
+            if fname.startswith("PokeDatabase_backup_") and fname.endswith(".db"):
+                fpath = os.path.join(backups_dir, fname)
+                if os.path.isfile(fpath) and os.path.getsize(fpath) > 0:
+                    candidates.append((os.path.getmtime(fpath), fpath))
+    except Exception:
+        return None
+
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    first_healthy = None
+    for _, fpath in candidates:
+        conn = None
+        try:
+            conn = sqlite3.connect(f"file:{fpath}?mode=ro", uri=True, timeout=3)
+            cur = conn.cursor()
+            rows = cur.execute("PRAGMA quick_check").fetchall()
+            if not rows or rows[0][0] != "ok":
+                continue
+            if first_healthy is None:
+                first_healthy = fpath
+            has_users_tbl = cur.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='Usuarios'"
+            ).fetchone()
+            if has_users_tbl and cur.execute("SELECT 1 FROM Usuarios LIMIT 1").fetchone():
+                return fpath
+        except Exception:
+            continue
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+    return first_healthy
+
+
 def ensure_user_data_initialized():
     """
     Inicializa los archivos persistentes del usuario en USER_DATA_DIR (%LOCALAPPDATA%\\PokeBinder)
-    si aún no existen, migrando datos previos de la carpeta instalada/bundle cuando corresponda.
+    si aún no existen, priorizando respaldos existentes y migrando datos previos cuando corresponda.
     Así el usuario jamás pierde sus sesiones, colecciones ni binders al actualizar la aplicación.
     """
     os.makedirs(USER_DATA_DIR, exist_ok=True)
 
     # 1. Base de datos SQLite
-    if not os.path.exists(DB_PATH):
-        legacy_candidates = [
-            os.path.join(EXE_DIR, "PokeDatabase.db"),
-            os.path.join(EXE_DIR, "_internal", "PokeDatabase.db"),
-            SEED_DB_PATH,
-        ]
-        for cand in legacy_candidates:
-            if cand and os.path.exists(cand) and os.path.abspath(cand) != os.path.abspath(DB_PATH):
-                try:
-                    shutil.copy2(cand, DB_PATH)
-                    print(f"[Storage] Base de datos inicializada en {DB_PATH} desde {cand}")
-                    break
-                except Exception as e:
-                    print(f"[Storage] Error copiando DB desde {cand}: {e}")
+    if not os.path.exists(DB_PATH) or os.path.getsize(DB_PATH) <= 0:
+        restored_from_backup = False
+        latest_backup = _find_latest_healthy_backup_db(BACKUPS_DIR)
+        if latest_backup and os.path.abspath(latest_backup) != os.path.abspath(DB_PATH):
+            try:
+                shutil.copy2(latest_backup, DB_PATH)
+                for suffix in ("-wal", "-shm", "-journal"):
+                    sidecar = DB_PATH + suffix
+                    if os.path.exists(sidecar):
+                        try:
+                            os.remove(sidecar)
+                        except Exception:
+                            pass
+                print(f"[Storage] Base de datos recuperada en {DB_PATH} desde respaldo {latest_backup}")
+                restored_from_backup = True
+            except Exception as e:
+                print(f"[Storage] Error recuperando DB desde respaldo {latest_backup}: {e}")
+
+        if not restored_from_backup:
+            legacy_candidates = [
+                os.path.join(EXE_DIR, "PokeDatabase.db"),
+                os.path.join(EXE_DIR, "_internal", "PokeDatabase.db"),
+                SEED_DB_PATH,
+            ]
+            for cand in legacy_candidates:
+                if cand and os.path.exists(cand) and os.path.abspath(cand) != os.path.abspath(DB_PATH):
+                    try:
+                        shutil.copy2(cand, DB_PATH)
+                        print(f"[Storage] Base de datos inicializada en {DB_PATH} desde {cand}")
+                        break
+                    except Exception as e:
+                        print(f"[Storage] Error copiando DB desde {cand}: {e}")
 
     # 2. Datos de Binders (binder_data.json)
     if not os.path.exists(BINDER_DATA_FILE):

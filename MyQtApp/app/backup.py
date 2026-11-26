@@ -202,6 +202,7 @@ def cleanup_old_backups(keep_count: int = 15):
         for full_path, _ in items[keep_count:]:
             try:
                 os.remove(full_path)
+                _cleanup_sqlite_sidecars(full_path)
                 print(f"[Backup] Limpieza de respaldo antiguo: {full_path}")
             except Exception as e:
                 print(f"[Backup] No se pudo eliminar respaldo antiguo {full_path}: {e}")

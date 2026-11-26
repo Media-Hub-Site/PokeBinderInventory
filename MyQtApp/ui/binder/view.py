@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (
     QDialog, QMessageBox, QColorDialog, QMenu, QFileDialog, QTabWidget,
 )
 from PyQt6.QtCore import (
-    Qt, QMimeData, QPoint, QPointF, QSize, QEasingCurve,
+    Qt, QEvent, QMimeData, QPoint, QPointF, QSize, QEasingCurve,
     QPropertyAnimation, QRect, QRectF, QTimer, pyqtSignal,
 )
 from PyQt6.QtGui import (
@@ -80,6 +80,9 @@ class BinderView(QWidget):
         self.show_card_details = False
         self.move_pages_mode = False
         self._selected_move_page: int | None = None
+        self._folders_grid_cols: int | None = None
+        self._suppress_folders_resize_render = False
+        self._in_folders_resize_render = False
         
         self.load_binder_data()
         
@@ -186,8 +189,43 @@ class BinderView(QWidget):
         self.folders_grid.setSpacing(22)
         self.folders_grid.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         self.folders_scroll.setWidget(self.folders_container)
+        self.folders_scroll.viewport().installEventFilter(self)
 
         layout.addWidget(self.folders_scroll, 1)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._reflow_folders_grid_if_needed()
+
+    def eventFilter(self, obj, event):
+        if (
+            hasattr(self, "folders_scroll")
+            and self.folders_scroll is not None
+            and obj is self.folders_scroll.viewport()
+            and event.type() == QEvent.Type.Resize
+        ):
+            self._reflow_folders_grid_if_needed()
+        return super().eventFilter(obj, event)
+
+    def _reflow_folders_grid_if_needed(self):
+        """Re-ajusta la cuadrícula de binders cuando cambia el ancho disponible sin afectar el interior de un binder."""
+        if (
+            getattr(self, "_suppress_folders_resize_render", False)
+            or getattr(self, "_in_folders_resize_render", False)
+            or self.is_inside_binder()
+            or self._active_open_overlay is not None
+            or not self.folders_view_widget.isVisible()
+        ):
+            return
+        if not self.get_user_folders():
+            return
+        new_cols = self._compute_folders_grid_cols()
+        if new_cols != self._folders_grid_cols:
+            self._in_folders_resize_render = True
+            try:
+                self.render_folders_grid()
+            finally:
+                self._in_folders_resize_render = False
 
     def setup_binder_pages_view(self):
         """Configura la vista interna del binder seleccionado."""
@@ -663,8 +701,12 @@ class BinderView(QWidget):
                         )
 
                         # Cambiar a la estantería y calcular el destino exacto de la carpeta
+                        self._suppress_folders_resize_render = True
+                        try:
+                            self.main_stack.setCurrentWidget(self.folders_view_widget)
+                        finally:
+                            self._suppress_folders_resize_render = False
                         self.render_folders_grid()
-                        self.main_stack.setCurrentWidget(self.folders_view_widget)
                         if self.folders_view_widget.layout():
                             self.folders_view_widget.layout().activate()
                         if self.folders_container.layout():
@@ -714,8 +756,12 @@ class BinderView(QWidget):
                 except Exception as e:
                     print(f"Error en animación de cierre de binder: {e}")
 
+        self._suppress_folders_resize_render = True
+        try:
+            self.main_stack.setCurrentWidget(self.folders_view_widget)
+        finally:
+            self._suppress_folders_resize_render = False
         self.render_folders_grid()
-        self.main_stack.setCurrentWidget(self.folders_view_widget)
 
     def stop_active_animations(self):
         """Detiene y limpia overlays de apertura/giro activos antes de cambiar de sección."""
@@ -994,6 +1040,16 @@ class BinderView(QWidget):
             "entries": entries,
         }
 
+    @staticmethod
+    def _format_source_total(info: dict, active_curr: str) -> str:
+        """Formatea el valor acumulado de una fuente de precios en la moneda activa."""
+        moneda = str(info.get("moneda") or "USD").upper()
+        orig = float(info.get("orig") or 0.0)
+        usd = float(info.get("usd") or 0.0)
+        if moneda == active_curr and orig > 0:
+            return format_price(orig, moneda, target_currency=active_curr, include_code=True)
+        return format_price(usd, "USD", target_currency=active_curr, include_code=True)
+
     def actualizar_resumen_precios_binder(self):
         """Refresca la barra de valor acumulativo por API de la carpeta actualmente abierta."""
         if not hasattr(self, "binder_prices_pills_layout"):
@@ -1029,36 +1085,47 @@ class BinderView(QWidget):
 
         if ordered_sources:
             palette = {
-                "TCGPlayer": ("#ecfdf5", "#15803d", "#86efac"),
-                "TCGMatch": ("#eff6ff", "#1d4ed8", "#93c5fd"),
-                "Cardmarket": ("#fef2f2", "#be123c", "#fda4af"),
-                "PokemonTCG": ("#fef3c7", "#b45309", "#fcd34d"),
-                "TCGCSV": ("#f5f3ff", "#6d28d9", "#c4b5fd"),
+                "TCGPlayer": ("#ecfdf5", "#15803d", "#86efac", "#d1fae5"),
+                "TCGMatch": ("#eff6ff", "#1d4ed8", "#93c5fd", "#dbeafe"),
+                "Cardmarket": ("#fef2f2", "#be123c", "#fda4af", "#fee2e2"),
+                "PokemonTCG": ("#fef3c7", "#b45309", "#fcd34d", "#fde68a"),
+                "TCGCSV": ("#f5f3ff", "#6d28d9", "#c4b5fd", "#ede9fe"),
             }
             for src in ordered_sources:
                 info = sources[src]
-                bg, fg, bd = palette.get(src, ("#f8fafc", "#334155", "#cbd5e1"))
-                moneda = str(info.get("moneda") or "USD").upper()
-                if moneda == active_curr and info.get("orig", 0) > 0:
-                    val_txt = format_price(info["orig"], moneda, target_currency=active_curr, include_code=True)
-                else:
-                    val_txt = format_price(info["usd"], "USD", target_currency=active_curr, include_code=True)
-                txt = f"{src} = {val_txt}"
-                pill = QLabel(txt)
-                pill.setToolTip(f"{src}: {info['priced_count']}/{total_cards} cartas cotizadas")
+                bg, fg, bd, hover_bg = palette.get(src, ("#f8fafc", "#334155", "#cbd5e1", "#e2e8f0"))
+                val_txt = self._format_source_total(info, active_curr)
+                pill = QLabel(src)
+                pill.setCursor(Qt.CursorShape.PointingHandCursor)
+                pill.setToolTip(
+                    f"{src}\n"
+                    f"{t('Valor del Binder')}: {val_txt}\n"
+                    f"Cartas cotizadas: {info['priced_count']}/{total_cards}"
+                )
                 pill.setStyleSheet(
-                    f"background-color: {bg}; color: {fg}; border: 1px solid {bd}; "
-                    f"border-radius: 8px; padding: 3px 9px; font-size: 11px; font-weight: bold;"
+                    f"QLabel {{ background-color: {bg}; color: {fg}; border: 1px solid {bd}; "
+                    f"border-radius: 8px; padding: 3px 10px; font-size: 11px; font-weight: bold; }}"
+                    f"QLabel:hover {{ background-color: {hover_bg}; border-color: {fg}; }}"
                 )
                 self.binder_prices_pills_layout.addWidget(pill)
         else:
             base_usd = res["base_total_usd"]
             base_fmt = format_price(base_usd, "USD", target_currency=active_curr, include_code=True)
-            pill = QLabel(f"Mercado Base = {base_fmt}")
-            pill.setToolTip(t("Presiona 'Cotizar Mercado' para comparar precios entre TCGPlayer, TCGMatch y PokemonTCG"))
+            hint_txt = t(
+                "Presiona 'Cotizar Mercado' para comparar precios entre TCGPlayer, TCGMatch y PokemonTCG"
+            )
+            pill = QLabel(t("Mercado Base"))
+            pill.setCursor(Qt.CursorShape.PointingHandCursor)
+            pill.setToolTip(
+                f"{t('Mercado Base')}\n"
+                f"{t('Valor del Binder')}: {base_fmt}\n"
+                f"Cartas con precio base: {res['base_priced_count']}/{total_cards}\n"
+                f"{hint_txt}"
+            )
             pill.setStyleSheet(
-                "background-color: #fff0f3; color: #703043; border: 1px solid #f2a7b7; "
-                "border-radius: 8px; padding: 3px 10px; font-size: 11px; font-weight: bold;"
+                "QLabel { background-color: #fff0f3; color: #703043; border: 1px solid #f2a7b7; "
+                "border-radius: 8px; padding: 3px 10px; font-size: 11px; font-weight: bold; }"
+                "QLabel:hover { background-color: #ffe4e9; border-color: #f56b7b; }"
             )
             self.binder_prices_pills_layout.addWidget(pill)
 
@@ -1097,16 +1164,30 @@ class BinderView(QWidget):
         self.btn_sync_binder_prices.setText(t("Cotizar Mercado"))
         show_toast(f"Error al cotizar carpeta: {err_msg}", "error")
 
+    def _compute_folders_grid_cols(self) -> int:
+        """Calcula el número de columnas de la estantería según el ancho disponible del viewport."""
+        vw = 0
+        if hasattr(self, "folders_scroll") and self.folders_scroll is not None:
+            vp = self.folders_scroll.viewport()
+            if vp is not None:
+                vw = vp.width()
+        if vw <= 240:
+            return 3
+        return max(3, (vw - 32) // 240)
+
     def render_folders_grid(self):
         """Dibuja los binders con diseños físicos realistas o un único botón grande si no hay carpetas."""
         self._folder_cover_widgets.clear()
         for i in reversed(range(self.folders_grid.count())):
-            item = self.folders_grid.itemAt(i)
+            item = self.folders_grid.takeAt(i)
             if item and item.widget():
-                item.widget().deleteLater()
+                w = item.widget()
+                w.hide()
+                w.deleteLater()
 
         folders = self.get_user_folders()
         if not folders:
+            self._folders_grid_cols = None
             # Estado vacío ultra limpio (Issue #12): un único botón grande preguntando si desea crear una carpeta, sin emojis
             self.folders_header_widget.setVisible(False)
             self.folders_grid.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1142,7 +1223,8 @@ class BinderView(QWidget):
         self.folders_header_widget.setVisible(True)
         self.folders_grid.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
 
-        cols = 3
+        cols = self._compute_folders_grid_cols()
+        self._folders_grid_cols = cols
         row = 0
         col = 0
         for f_id, f_data in folders.items():
@@ -1199,32 +1281,39 @@ class BinderView(QWidget):
         self._folder_cover_widgets[f_id] = cover
         layout.addWidget(cover, alignment=Qt.AlignmentFlag.AlignHCenter)
 
-        # Resumen de precio acumulativo de mercado
+        # Resumen de precio acumulativo de mercado (solo TCGMatch en vista externa)
         price_res = self.calcular_precios_carpeta(f_data)
         src_map = price_res["sources"]
         active_curr = get_active_currency()
-        if src_map:
-            parts = []
-            for src in PRICE_SOURCE_ORDER:
-                if src in src_map:
-                    info = src_map[src]
-                    moneda = str(info.get("moneda") or "USD").upper()
-                    if moneda == active_curr and info.get("orig", 0) > 0:
-                        val_txt = format_price(info["orig"], moneda, target_currency=active_curr, include_code=False)
-                    else:
-                        val_txt = format_price(info["usd"], "USD", target_currency=active_curr, include_code=False)
-                    parts.append(f"{src}: {val_txt}")
-            price_summary_txt = f"{' | '.join(parts[:2])} {active_curr}"
+        tcgmatch_info = src_map.get("TCGMatch")
+        total_cards = price_res["total_cards"]
+        if tcgmatch_info and (
+            float(tcgmatch_info.get("orig") or 0) > 0
+            or float(tcgmatch_info.get("usd") or 0) > 0
+        ):
+            val_txt = self._format_source_total(tcgmatch_info, active_curr)
+            price_summary_txt = f"TCGMatch: {val_txt}"
+            price_tooltip = (
+                f"TCGMatch\n"
+                f"Valor total: {val_txt}\n"
+                f"Cartas cotizadas: {tcgmatch_info['priced_count']}/{total_cards}"
+            )
         else:
-            price_summary_txt = format_price(
-                price_res["base_total_usd"], "USD", target_currency=active_curr, include_code=True
+            zero_txt = format_price(0.0, "USD", target_currency=active_curr, include_code=True)
+            price_summary_txt = f"TCGMatch: {zero_txt}"
+            price_tooltip = (
+                f"TCGMatch\n"
+                f"Sin cartas cotizadas aún (0/{total_cards})\n"
+                f"Abre el binder y presiona 'Cotizar Mercado'"
             )
 
         lbl_folder_val = QLabel(price_summary_txt)
         lbl_folder_val.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lbl_folder_val.setToolTip(price_tooltip)
         lbl_folder_val.setStyleSheet(
-            "background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 7px; "
-            "padding: 3px 6px; font-size: 10px; font-weight: 700; color: #15803d;"
+            "QLabel { background-color: #eff6ff; color: #1d4ed8; border: 1px solid #93c5fd; "
+            "border-radius: 7px; padding: 3px 6px; font-size: 10px; font-weight: 700; }"
+            "QLabel:hover { background-color: #dbeafe; border-color: #1d4ed8; }"
         )
         layout.addWidget(lbl_folder_val)
 

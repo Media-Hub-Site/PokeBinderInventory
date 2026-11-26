@@ -28,6 +28,7 @@ from MyQtApp.app.price_updater import (
 from MyQtApp.session import SessionLocal
 from MyQtApp.models import Cartas
 from MyQtApp.ui.pixmap_cache import get_cached_pixmap, scale_cached_pixmap
+from MyQtApp.ui.card_holo_effects import resolve_holo_profile, paint_card_holo_effect
 
 # Referencias fuertes a QThreads desacoplados en ejecución para evitar
 # "QThread: Destroyed while thread '' is still running" al cerrar diálogos/overlays
@@ -231,6 +232,7 @@ class CardItemWidget(QWidget):
         self.carta = carta
         self.id_api = getattr(carta, 'id_api', None)
         self.idioma = getattr(carta, 'idioma', None) or language_manager.current_language
+        self.variante = normalize_variant_name(variante)
         self.card_key = f"{self.id_api}:{self.idioma}"
         self._copy_qty = 1
         self._min_copy_qty = 1
@@ -248,7 +250,8 @@ class CardItemWidget(QWidget):
         layout.addWidget(self.image_label)
 
         # Botón rectangular vertical de variante (arriba a la izquierda)
-        self.variant_badge = VariantBadgeButton(self.id_api, variante, self)
+        self.variant_badge = VariantBadgeButton(self.id_api, self.variante, self)
+        self.variant_badge.variant_changed.connect(self._on_item_variant_changed)
         self.variant_badge.move(3, 3)
         self.variant_badge.raise_()
 
@@ -347,6 +350,9 @@ class CardItemWidget(QWidget):
         self.copy_stepper.move(sx, sy)
         self.copy_stepper.hide()
 
+    def _on_item_variant_changed(self, _id_api: str, nueva_variante: str):
+        self.variante = normalize_variant_name(nueva_variante)
+
     def _adjust_copy_qty(self, delta: int):
         min_q = getattr(self, "_min_copy_qty", 1)
         new_qty = max(min_q, min(99, int(self._copy_qty) + int(delta)))
@@ -429,6 +435,7 @@ class InteractiveCard3DWidget(QWidget):
         self._card_w = 340
         self._card_h = 476
         self._is_dragging = False
+        self._holo_profile = resolve_holo_profile(None)
 
         # Temporizador a 60 FPS para suavizado de inercia y física de masa
         self._physics_timer = QTimer(self)
@@ -467,6 +474,16 @@ class InteractiveCard3DWidget(QWidget):
 
     def set_front_pixmap(self, pixmap: QPixmap):
         self._front_pixmap = pixmap
+        self.update()
+
+    def set_card_metadata(self, rarity=None, especial_type=None, variante=None, tag=None):
+        """Actualiza el perfil holográfico 3D según rareza, rule-box, variante y tag."""
+        self._holo_profile = resolve_holo_profile(
+            rarity=rarity,
+            especial_type=especial_type,
+            variante=variante,
+            tag=tag,
+        )
         self.update()
 
     def flip_card(self):
@@ -614,83 +631,16 @@ class InteractiveCard3DWidget(QWidget):
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawRoundedRect(QRectF(cx, cy, cw, ch), 14, 14)
 
-        # 4. CAPA HOLOGRÁFICA PRISMÁTICA (FOIL RAINBOW & SPECULAR GLARE)
+        # 4. CAPA HOLOGRÁFICA SELECTIVA POR RAREZA / VARIANTE
         if not is_back:
-            tilt_magnitude = (abs(self._rot_x) + abs(self._rot_y)) / 48.0
-            tilt_magnitude = min(1.0, tilt_magnitude)
-
-            # Destello radial
-            glare_x = cx + (0.5 + (self._rot_y / 70.0)) * cw
-            glare_y = cy + (0.5 - (self._rot_x / 70.0)) * ch
-
-            glare_grad = QRadialGradient(glare_x, glare_y, max(cw, ch) * 0.75)
-            glare_grad.setColorAt(0.0, QColor(255, 255, 255, int(140 * tilt_magnitude + 30)))
-            glare_grad.setColorAt(0.45, QColor(255, 255, 255, int(45 * tilt_magnitude)))
-            glare_grad.setColorAt(1.0, QColor(255, 255, 255, 0))
-
-            painter.save()
-            painter.setClipPath(clip_path)
-            painter.setBrush(glare_grad)
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.drawRoundedRect(QRectF(cx, cy, cw, ch), 14, 14)
-
-            # Arcoíris holográfico reactivo al ángulo (Foil Prismático + Cosmos Sparkles - Etapa 3)
-            if tilt_magnitude > 0.03:
-                # Banda prismática que se desplaza dinámicamente con la inclinación del cursor
-                shift_x = (self._rot_y / 34.0) * cw * 0.85
-                shift_y = (-self._rot_x / 34.0) * ch * 0.85
-                rainbow_grad = QLinearGradient(
-                    cx - cw * 0.25 + shift_x,
-                    cy - ch * 0.25 + shift_y,
-                    cx + cw * 1.15 + shift_x,
-                    cy + ch * 1.15 + shift_y,
-                )
-                rainbow_grad.setSpread(QLinearGradient.Spread.ReflectSpread)
-                alpha = int(88 * tilt_magnitude)
-                rainbow_grad.setColorAt(0.00, QColor(236, 72, 153, alpha))
-                rainbow_grad.setColorAt(0.20, QColor(56, 189, 248, alpha))
-                rainbow_grad.setColorAt(0.40, QColor(74, 222, 128, alpha))
-                rainbow_grad.setColorAt(0.60, QColor(250, 204, 21, alpha))
-                rainbow_grad.setColorAt(0.80, QColor(168, 85, 247, alpha))
-                rainbow_grad.setColorAt(1.00, QColor(244, 114, 182, alpha))
-
-                painter.setBrush(rainbow_grad)
-                painter.drawRoundedRect(QRectF(cx, cy, cw, ch), 14, 14)
-
-                # Haz metálico diagonal fino que barre la carta al girarla
-                beam_pos = 0.5 + (self._rot_y - self._rot_x) / 95.0
-                beam_x = cx + beam_pos * cw
-                beam_grad = QLinearGradient(beam_x - cw * 0.22, cy, beam_x + cw * 0.22, cy + ch * 0.35)
-                beam_a = int(105 * tilt_magnitude)
-                beam_grad.setColorAt(0.0, QColor(255, 255, 255, 0))
-                beam_grad.setColorAt(0.5, QColor(255, 255, 255, beam_a))
-                beam_grad.setColorAt(1.0, QColor(255, 255, 255, 0))
-                painter.setBrush(beam_grad)
-                painter.drawRoundedRect(QRectF(cx, cy, cw, ch), 14, 14)
-
-                # Destellos micro-holográficos (Cosmos Holo Sparkles) que brillan al pasar el haz
-                sparkles = (
-                    (0.18, 0.22), (0.36, 0.16), (0.68, 0.20), (0.82, 0.28),
-                    (0.24, 0.38), (0.52, 0.34), (0.76, 0.44), (0.15, 0.54),
-                    (0.42, 0.52), (0.64, 0.58), (0.85, 0.62), (0.28, 0.72),
-                    (0.55, 0.75), (0.78, 0.80), (0.20, 0.86), (0.48, 0.88),
-                )
-                for sx_r, sy_r in sparkles:
-                    sx = cx + sx_r * cw
-                    sy = cy + sy_r * ch
-                    dist = abs((sx_r + sy_r * 0.35) - (beam_pos + 0.18))
-                    intensity = max(0.0, 1.0 - dist / 0.26) * tilt_magnitude
-                    if intensity > 0.18:
-                        sp_a = int(235 * intensity)
-                        rad = 2.0 + 3.2 * intensity
-                        painter.setPen(QPen(QColor(255, 255, 255, sp_a), 1.1))
-                        painter.drawLine(QPointF(sx - rad, sy), QPointF(sx + rad, sy))
-                        painter.drawLine(QPointF(sx, sy - rad), QPointF(sx, sy + rad))
-                        painter.setPen(Qt.PenStyle.NoPen)
-                        painter.setBrush(QColor(255, 255, 255, sp_a))
-                        painter.drawEllipse(QPointF(sx, sy), 1.4 * intensity + 0.6, 1.4 * intensity + 0.6)
-
-            painter.restore()
+            paint_card_holo_effect(
+                painter,
+                clip_path,
+                QRectF(cx, cy, cw, ch),
+                self._rot_x,
+                self._rot_y,
+                self._holo_profile,
+            )
 
 
 class CardZoomOverlay(QWidget):
@@ -742,6 +692,11 @@ class CardZoomOverlay(QWidget):
         self.btn_flip.clicked.connect(self.card_3d.flip_card)
         controls_layout.addWidget(self.btn_flip)
 
+        self.effect_badge = QLabel("Efecto: Mate (Sin holo)", self.controls_widget)
+        self.effect_badge.setObjectName("EffectBadge")
+        controls_layout.addWidget(self.effect_badge)
+        self._update_effect_badge(self.card_3d._holo_profile)
+
         self.hint_label = QLabel("💡 Arrastra la carta para inclinar en 3D • Doble clic para voltear", self.controls_widget)
         controls_layout.addWidget(self.hint_label)
 
@@ -789,9 +744,103 @@ class CardZoomOverlay(QWidget):
             painter.fillRect(self.rect(), QColor(8, 12, 20, self._bg_alpha))
         super().paintEvent(event)
 
-    def show_zoom(self, pixmap: QPixmap, origin_global_rect: QRect, id_api: str = None, nombre_archivo: str = None, set_id: str = None, number: str = None, idioma: str = None):
+    def _update_effect_badge(self, profile_info: dict):
+        if not hasattr(self, "effect_badge") or not profile_info:
+            return
+        prof = profile_info.get("profile", "matte_none")
+        label = profile_info.get("label", "Mate (Sin holo)")
+        accent = profile_info.get("accent", "#94a3b8")
+        c = QColor(accent)
+        if not c.isValid():
+            c = QColor("#94a3b8")
+        if prof == "matte_none":
+            self.effect_badge.setText(f"Efecto: {label}")
+            text_col = "#cbd5e1"
+            bg_alpha = 28
+            border_alpha = 110
+        else:
+            self.effect_badge.setText(f"✨ Efecto: {label}")
+            text_col = c.lighter(120).name()
+            bg_alpha = 42
+            border_alpha = 185
+        self.effect_badge.setStyleSheet(
+            f"QLabel#EffectBadge {{"
+            f" background-color: rgba({c.red()}, {c.green()}, {c.blue()}, {bg_alpha});"
+            f" color: {text_col};"
+            f" border: 1px solid rgba({c.red()}, {c.green()}, {c.blue()}, {border_alpha});"
+            f" border-radius: 10px;"
+            f" padding: 3px 10px;"
+            f" font-size: 11px;"
+            f" font-weight: 700;"
+            f"}}"
+        )
+        self.effect_badge.adjustSize()
+
+    @staticmethod
+    def _fetch_card_zoom_metadata(id_api: str, idioma: str | None, rarity, especial_type, tag):
+        """Consulta defensivamente idioma, rareza, rule-box y tag desde SQLite."""
+        session = None
+        try:
+            session = SessionLocal()
+            try:
+                q = session.query(Cartas).filter(Cartas.id_api == id_api)
+                c_db = q.filter(Cartas.idioma == idioma).first() if idioma else None
+                if c_db is None:
+                    c_db = q.first()
+                if c_db is not None:
+                    if not idioma and getattr(c_db, "idioma", None):
+                        idioma = c_db.idioma
+                    if rarity is None:
+                        rarity = getattr(c_db, "rarity", None)
+                    if especial_type is None:
+                        especial_type = getattr(c_db, "especial_type", None)
+                    if tag is None:
+                        tag = getattr(c_db, "tag", None)
+            except Exception:
+                q_cols = session.query(Cartas.idioma, Cartas.rarity, Cartas.especial_type).filter(
+                    Cartas.id_api == id_api
+                )
+                row = q_cols.filter(Cartas.idioma == idioma).first() if idioma else None
+                if row is None:
+                    row = q_cols.first()
+                if row is not None:
+                    if not idioma and row[0]:
+                        idioma = row[0]
+                    if rarity is None:
+                        rarity = row[1]
+                    if especial_type is None:
+                        especial_type = row[2]
+        except Exception:
+            pass
+        finally:
+            if session is not None:
+                try:
+                    session.close()
+                except Exception:
+                    pass
+        return idioma, rarity, especial_type, tag
+
+    def show_zoom(
+        self,
+        pixmap: QPixmap,
+        origin_global_rect: QRect,
+        id_api: str = None,
+        nombre_archivo: str = None,
+        set_id: str = None,
+        number: str = None,
+        idioma: str = None,
+        rarity: str = None,
+        especial_type: str = None,
+        variante: str = None,
+        tag: str = None,
+    ):
         if not self.parent_window or pixmap.isNull():
             return
+
+        if id_api and (not idioma or rarity is None or especial_type is None or tag is None):
+            idioma, rarity, especial_type, tag = self._fetch_card_zoom_metadata(
+                id_api, idioma, rarity, especial_type, tag
+            )
 
         self._current_id_api = id_api
         self._opened_timestamp = QDateTime.currentMSecsSinceEpoch()
@@ -815,6 +864,15 @@ class CardZoomOverlay(QWidget):
         max_h = min(int(avail_h * 0.82), 450)
         max_w = int(max_h * (2.5 / 3.5))
 
+        self.card_3d.set_card_metadata(
+            rarity=rarity,
+            especial_type=especial_type,
+            variante=variante,
+            tag=tag,
+        )
+        self._update_effect_badge(self.card_3d._holo_profile)
+        self.controls_widget.adjustSize()
+
         self.card_3d.set_front_pixmap(pixmap)
         self.card_3d.set_card_size(max_w, max_h)
 
@@ -835,7 +893,7 @@ class CardZoomOverlay(QWidget):
         self.target_rect = QRect(center_x, center_y, total_w, total_h)
 
         # Posicionar barra de botones abajo centrada sin superponerse con la carta
-        ctrl_w = self.controls_widget.sizeHint().width()
+        ctrl_w = min(max(200, self.width() - 20), self.controls_widget.sizeHint().width())
         ctrl_h = self.controls_widget.sizeHint().height()
         ctrl_x = (self.width() - ctrl_w) // 2
         ctrl_y = visual_card_top + max_h + 14
@@ -874,19 +932,7 @@ class CardZoomOverlay(QWidget):
 
         # Iniciar carga/descarga de imagen Full HD (.png) en segundo plano en assets/images_hd
         if id_api:
-            card_lang = idioma
-            if not card_lang:
-                try:
-                    session = SessionLocal()
-                    c_db = session.query(Cartas).filter(Cartas.id_api == id_api).first()
-                    session.close()
-                    if c_db and c_db.idioma:
-                        card_lang = c_db.idioma
-                except Exception:
-                    pass
-
-            if not card_lang:
-                card_lang = language_manager.current_language
+            card_lang = idioma or language_manager.current_language
 
             # 1. Comprobar si ya existe la versión HD en PNG guardada localmente en assets/images_hd
             existing_hd = get_hd_pixmap(id_api, nombre_archivo, card_lang)
@@ -1033,12 +1079,22 @@ class ClickableLabel(QLabel):
         set_id = None
         number = None
         idioma = None
+        rarity = None
+        especial_type = None
+        variante = None
+        tag = None
 
         if self.id_carta:
             parent_widget = self.parent()
             carta_obj = getattr(parent_widget, 'carta', None) if parent_widget else None
+            variante = getattr(parent_widget, 'variante', None) if parent_widget else None
+            if not variante and parent_widget and getattr(parent_widget, 'variant_badge', None):
+                variante = getattr(parent_widget.variant_badge, 'variante_actual', None)
             nombre = getattr(carta_obj, 'nombre', None)
             idioma = getattr(carta_obj, 'idioma', None)
+            rarity = getattr(carta_obj, 'rarity', None)
+            especial_type = getattr(carta_obj, 'especial_type', None)
+            tag = getattr(carta_obj, 'tag', None)
             if nombre:
                 nombre_archivo = nombre.lower().replace(" ", "_")
                 set_id = getattr(carta_obj, 'set_id', None)
@@ -1051,7 +1107,6 @@ class ClickableLabel(QLabel):
                     hi_pix = get_pixmap_from_zip(nombre_archivo, size=(450, 630), id_api=self.id_carta)
                 if hi_pix:
                     pix = hi_pix
-                    pix = hi_pix
 
         if pix and not pix.isNull():
             origin_global = QRect(self.mapToGlobal(QPoint(0, 0)), self.size())
@@ -1062,7 +1117,11 @@ class ClickableLabel(QLabel):
                 nombre_archivo=nombre_archivo,
                 set_id=set_id,
                 number=number,
-                idioma=idioma
+                idioma=idioma,
+                rarity=rarity,
+                especial_type=especial_type,
+                variante=variante,
+                tag=tag,
             )
 
     def ejecutar_animacion_burbuja(self):
@@ -1542,6 +1601,7 @@ class InfoIconLabel(QLabel):
         edicion = getattr(carta, 'edition', None) or t("No disponible")
         entrenador = getattr(carta, 'trainer', None) or t("No disponible")
         especial = getattr(carta, 'especial_type', None) or t("No disponible")
+        tag = getattr(carta, 'tag', None)
 
         lbl_tipo = t("Tipo")
         lbl_set = t("Set / Serie:")
@@ -1552,6 +1612,7 @@ class InfoIconLabel(QLabel):
         lbl_esp = t("Especial")
         lbl_ent = t("Entrenador")
         lbl_edi = t("Edición")
+        lbl_tag = t("Tag")
 
         # Consultar precios multi-API almacenados en BD
         multi_prices = preloaded_prices if preloaded_prices is not None else (
@@ -1630,6 +1691,7 @@ class InfoIconLabel(QLabel):
                 {"<tr><td style='color: #94a3b8; padding-right: 10px;'><b>" + lbl_esp + ":</b></td><td style='color: #f8fafc;'>" + especial + "</td></tr>" if especial not in ("Normal", "N/A", "Ninguno") else ""}
                 {"<tr><td style='color: #94a3b8; padding-right: 10px;'><b>" + lbl_ent + ":</b></td><td style='color: #f8fafc;'>" + entrenador + "</td></tr>" if entrenador not in ("Desconocido", "N/A", "Ninguno") else ""}
                 {"<tr><td style='color: #94a3b8; padding-right: 10px;'><b>" + lbl_edi + ":</b></td><td style='color: #f8fafc;'>" + edicion + "</td></tr>" if edicion not in ("Ninguno", "N/A") else ""}
+                {"<tr><td style='color: #94a3b8; padding-right: 10px;'><b>" + lbl_tag + ":</b></td><td style='color: #f8fafc;'>" + str(tag) + "</td></tr>" if tag not in (None, "", "Desconocido", "Ninguno") else ""}
                 <tr><td colspan="2" style="border-top: 1px solid #334155; padding-top: 4px; color: #38bdf8; font-size: 11px; font-weight: bold;">Precios de Mercado</td></tr>
                 {price_rows_html}
             </table>

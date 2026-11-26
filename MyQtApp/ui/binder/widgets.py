@@ -111,7 +111,14 @@ class DraggableCardLabel(QLabel):
         if parent_win and pix and not pix.isNull():
             origin_global = QRect(self.mapToGlobal(QPoint(0, 0)), self.size())
             overlay = CardZoomOverlay(parent_win)
-            overlay.show_zoom(pix, origin_global, id_api=self.id_api, nombre_archivo=self.nombre_archivo, idioma=idioma)
+            overlay.show_zoom(
+                pix,
+                origin_global,
+                id_api=self.id_api,
+                nombre_archivo=self.nombre_archivo,
+                idioma=idioma,
+                variante=getattr(self, "variante", None),
+            )
 
 
 class BinderSlot(QLabel):
@@ -179,7 +186,14 @@ class BinderSlot(QLabel):
         if parent_win and pix and not pix.isNull():
             origin_global = QRect(self.mapToGlobal(QPoint(0, 0)), self.size())
             overlay = CardZoomOverlay(parent_win)
-            overlay.show_zoom(pix, origin_global, id_api=self.id_api, nombre_archivo=self.nombre_archivo, idioma=idioma)
+            overlay.show_zoom(
+                pix,
+                origin_global,
+                id_api=self.id_api,
+                nombre_archivo=self.nombre_archivo,
+                idioma=idioma,
+                variante=getattr(self, "variante", None),
+            )
 
     def update_style(self):
         # Adaptar contraste del bolsillo al color interior de la hoja (Issue #28)

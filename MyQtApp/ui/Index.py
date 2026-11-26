@@ -166,7 +166,6 @@ class MainWindow(QWidget):
         self.usuario = usuario
         self.setObjectName("MainBackground")
         self.setWindowTitle(f"{t('Menú Principal')} - {t('Usuario:')} {usuario.capitalize()}")
-        self.setGeometry(550, 250, 1240, 920)
 
         main_layout = QHBoxLayout(self)
 

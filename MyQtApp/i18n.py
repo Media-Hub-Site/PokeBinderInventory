@@ -373,6 +373,20 @@ TRANSLATIONS = {
         "Français": "Édition",
         "Português": "Edição"
     },
+    "Tag": {
+        "Español": "Tag",
+        "English": "Tag",
+        "日本語": "タグ",
+        "Français": "Tag",
+        "Português": "Tag"
+    },
+    "Tag (Etiqueta)": {
+        "Español": "Tag (Etiqueta)",
+        "English": "Tag (Label)",
+        "日本語": "タグ（ラベル）",
+        "Français": "Tag (Étiquette)",
+        "Português": "Tag (Etiqueta)"
+    },
     "Etapa": {
         "Español": "Etapa",
         "English": "Stage",

@@ -31,6 +31,7 @@ class Cartas(Base):
     especial_type = Column(String)
     trainer = Column(String)
     edition = Column(String)
+    tag = Column(String, default="Desconocido")
     variantes_disponibles = Column(String, default="normal,reverse,holo")
     generacion = Column(String, nullable=True)
     pokedex_id = Column(Integer, nullable=True)

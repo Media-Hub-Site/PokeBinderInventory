@@ -1,3 +1,4 @@
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 try:
@@ -8,12 +9,11 @@ except ImportError:  # pragma: no cover
 
 # Orden lógico e intuitivo de filtros en la fila 2 (Buscar y Colecciones)
 FILTER_FIELDS_ORDER = [
-    ("Tipo", "type"),
     ("Etapa", "stage"),
     ("Rule Box", "especial_type"),
     ("Entrenador", "trainer"),
     ("Rareza", "rarity"),
-    ("Edición", "edition"),
+    ("Tag", "tag"),
 ]
 
 # Valores basura / internos que NUNCA deben aparecer en los desplegables
@@ -67,26 +67,30 @@ RULE_BOX_ORDER = [
     "VSTAR",
     "V-UNION",
     "GX",
-    "TAG TEAM",
     "MEGA",
-    "Tera",
     "Radiant",
     "BREAK",
     "LEGEND",
     "Level-Up",
     "ACE SPEC",
     "Prism Star",
-    "Star",
-    "Prime",
-    "Ultra Beast",
+    "Eternamax",
+]
+
+TAG_ORDER = [
+    "Desconocido",
+    "Tera",
     "Ancient",
     "Future",
-    "Single Strike",
     "Rapid Strike",
+    "Single Strike",
     "Fusion Strike",
+    "Ultra Beast",
     "Team Plasma",
+    "TAG TEAM",
     "SP",
-    "Eternamax",
+    "Star",
+    "Prime",
 ]
 
 _ORDER_BY_FIELD = {
@@ -148,6 +152,9 @@ def is_valid_filter_value(raw_value) -> bool:
 
 def sort_filter_values(field_name: str, raw_values) -> list[str]:
     """Filtra valores basura y ordena las opciones de un campo de manera intuitiva para jugadores de Pokémon TCG."""
+    if field_name == "tag":
+        return list(TAG_ORDER)
+
     cleaned_unique = []
     seen = set()
     for val in raw_values:
@@ -203,7 +210,28 @@ def format_filter_option_label(field_name: str, raw_value: str, lang: str | None
             return val
         return TRAINER_LABELS_ES.get(val, val)
 
+    if field_name == "tag":
+        if is_en and val == "Desconocido":
+            return "Unknown"
+        return val
+
     return val
+
+
+def apply_tag_filter(query, column, val):
+    """Filtra una consulta SQLAlchemy por Tag individual o combinado (separado por ', ')."""
+    if not val:
+        return query
+    if val == "Desconocido":
+        return query.filter(or_(column == "Desconocido", column.is_(None), column == ""))
+    return query.filter(
+        or_(
+            column == val,
+            column.like(f"{val}, %"),
+            column.like(f"%, {val}"),
+            column.like(f"%, {val}, %"),
+        )
+    )
 
 
 def filtro_cartas_sqlalchemy(
@@ -211,7 +239,7 @@ def filtro_cartas_sqlalchemy(
         user,
         id_api=None, nPokemon=None, tipo=None, precio=None, rareza=None,
         number=None, set_id=None, set_name=None, stage=None, especial_type=None,
-        trainer=None, edition=None
+        trainer=None, edition=None, tag=None
     ):
 
     # Filtros dinámicos según tu diccionario original
@@ -247,6 +275,9 @@ def filtro_cartas_sqlalchemy(
                 query = query.filter(columna.ilike(f"%{valor}%"))
             else:
                 query = query.filter(columna == valor)
+
+    if tag not in (None, "", []):
+        query = apply_tag_filter(query, Cartas.tag, tag)
 
     resultados = query.all()
 

@@ -5,7 +5,7 @@ from PyQt6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView, QSpinBox
 )
 from PyQt6.QtGui import QPixmap, QAction, QColor, QPalette
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QPropertyAnimation, QUrl, QEasingCurve, QPoint
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QPropertyAnimation, QUrl, QEasingCurve, QPoint, QRect
 from PyQt6.QtMultimedia import QSoundEffect
 import os
 
@@ -15,7 +15,7 @@ from ..app.getImgs import (
     get_pixmap_from_zip, get_webp_pixmap, get_card_placeholder_pixmap,
     CardImageLoaderManager
 )
-from MyQtApp.app.filtro import sort_filter_values, format_filter_option_label
+from MyQtApp.app.filtro import sort_filter_values, format_filter_option_label, apply_tag_filter
 from MyQtApp.app.price_updater import format_price, get_active_currency
 from MyQtApp.ui.CardWidget import ClickableLabel, CardItemWidget, VariantLegendBar, CardZoomOverlay
 from MyQtApp.ui.FilterVisualBar import EnergyTypeFilterBar
@@ -43,9 +43,16 @@ class GaleriaCartasInventario(QWidget):
         self.carpeta_activa = None
         self.current_page = 0
         self.total_cartas = 0
+        self._active_type = None
         self._active_generation = None
+        self._last_cols_per_row = None
         self._view_mode = "grid"  # "grid" | "list"
         self._current_cards_map = {}
+
+        self._resize_timer = QTimer(self)
+        self._resize_timer.setSingleShot(True)
+        self._resize_timer.setInterval(120)
+        self._resize_timer.timeout.connect(self._on_resize_reflow)
 
         self.image_loader = CardImageLoaderManager(max_threads=6, parent=self)
         self.image_loader.image_ready.connect(self._on_async_image_ready)
@@ -99,17 +106,18 @@ class GaleriaCartasInventario(QWidget):
 
         self.filtros = {}
         campos = {
-            "Tipo": "type",
             "Etapa": "stage",
             "Rule Box": "especial_type",
             "Entrenador": "trainer",
             "Rareza": "rarity",
-            "Edición": "edition"
+            "Tag": "tag",
         }
 
         for etiqueta, columna in campos.items():
             combo = QComboBox()
             combo.addItem(f"{t(etiqueta)}: {t('Todos')}", None)
+            if columna == "tag":
+                combo.setToolTip(t("Tag (Etiqueta)"))
             combo.setProperty("class", "FilterCombo")
             combo.currentIndexChanged.connect(self.reset_page_and_actualizar)
             self.filtros[columna] = combo
@@ -135,7 +143,6 @@ class GaleriaCartasInventario(QWidget):
         self.energy_bar.type_selected.connect(self._on_energy_pill_selected)
         self.energy_bar.generation_selected.connect(self._on_generation_pill_selected)
         self.energy_bar.zoom_changed.connect(self._on_zoom_changed)
-        self.filtros["type"].currentIndexChanged.connect(self._sync_energy_bar_from_combo)
         header_vbox.addWidget(self.energy_bar)
 
         # Barra dedicada y vistosa de Carpetas de Colección (Issue #12 y #15, sin emojis)
@@ -305,10 +312,14 @@ class GaleriaCartasInventario(QWidget):
             while combo.count() > 1:
                 combo.removeItem(1)
             valores = (
-                self.session.query(getattr(Cartas, columna))
-                .filter(getattr(Cartas, columna).isnot(None))
-                .distinct()
-                .all()
+                []
+                if columna == "tag"
+                else (
+                    self.session.query(getattr(Cartas, columna))
+                    .filter(getattr(Cartas, columna).isnot(None))
+                    .distinct()
+                    .all()
+                )
             )
             for raw_val in sort_filter_values(columna, valores):
                 display_txt = format_filter_option_label(columna, raw_val, curr_lang)
@@ -790,6 +801,7 @@ class GaleriaCartasInventario(QWidget):
             combo.setCurrentIndex(0)
             combo.blockSignals(False)
 
+        self._active_type = None
         self._active_generation = None
         if hasattr(self, "energy_bar"):
             self.energy_bar.reset_filters()
@@ -840,12 +852,46 @@ class GaleriaCartasInventario(QWidget):
 
         for columna, combo in self.filtros.items():
             if val := self._get_filter_value(combo):
-                q = q.filter(getattr(Cartas, columna) == val)
+                col_expr = getattr(Cartas, columna)
+                if columna == "tag":
+                    q = apply_tag_filter(q, col_expr, val)
+                else:
+                    q = q.filter(col_expr == val)
+
+        if getattr(self, "_active_type", None):
+            q = q.filter(Cartas.type == self._active_type)
 
         if getattr(self, "_active_generation", None):
             q = q.filter(Cartas.generacion.ilike(f"%{self._active_generation}%"))
 
         self.total_cartas = q.scalar()
+
+    def _compute_cols_per_row(self, card_w: int, tam: str) -> int:
+        fallback = {"Pequeño": 7, "Grande": 4}.get(tam, 5)
+        vw = self.scroll.viewport().width() if hasattr(self, "scroll") and self.scroll.viewport() else 0
+        if vw <= 100:
+            return fallback
+        margins = self.grid.contentsMargins()
+        h_spacing = self.grid.horizontalSpacing()
+        if h_spacing < 0:
+            h_spacing = 8
+        usable_w = max(0, vw - margins.left() - margins.right() - 20)
+        return max(1, (usable_w + h_spacing) // (card_w + h_spacing))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "_resize_timer"):
+            self._resize_timer.start(120)
+
+    def _on_resize_reflow(self):
+        if self._view_mode != "grid":
+            return
+        w, _h = self._current_card_size
+        from MyQtApp.config import load_settings
+        tam = load_settings().get("tamano_cartas", "Normal")
+        new_cols = self._compute_cols_per_row(w, tam)
+        if new_cols != getattr(self, "_last_cols_per_row", None):
+            self.actualizar_galeria()
 
     def actualizar_con_transicion(self):
         self.actualizar_galeria()
@@ -868,13 +914,12 @@ class GaleriaCartasInventario(QWidget):
         tam = settings.get("tamano_cartas", "Normal")
         if tam == "Pequeño":
             size = (90, 127)
-            cols_per_row = 7
         elif tam == "Grande":
             size = (150, 212)
-            cols_per_row = 4
         else:  # Normal
             size = (120, 170)
-            cols_per_row = 5
+        cols_per_row = self._compute_cols_per_row(size[0], tam)
+        self._last_cols_per_row = cols_per_row
         self._current_card_size = size
         if hasattr(self, "energy_bar"):
             self.energy_bar.set_active_zoom(tam)
@@ -902,14 +947,21 @@ class GaleriaCartasInventario(QWidget):
 
         for columna, combo in self.filtros.items():
             if val := self._get_filter_value(combo):
-                q = q.filter(getattr(Cartas, columna) == val)
+                col_expr = getattr(Cartas, columna)
+                if columna == "tag":
+                    q = apply_tag_filter(q, col_expr, val)
+                else:
+                    q = q.filter(col_expr == val)
+
+        if getattr(self, "_active_type", None):
+            q = q.filter(Cartas.type == self._active_type)
 
         if getattr(self, "_active_generation", None):
             q = q.filter(Cartas.generacion.ilike(f"%{self._active_generation}%"))
 
         # Issue #55: Ordenar por número de Pokédex cuando hay filtro de Generación o Energía/Tipo
         has_gen_filter = bool(getattr(self, "_active_generation", None))
-        has_type_filter = bool(self._get_filter_value(self.filtros["type"]))
+        has_type_filter = bool(getattr(self, "_active_type", None))
         if has_gen_filter or has_type_filter:
             q = q.order_by(
                 Cartas.pokedex_id.is_(None),
@@ -1005,23 +1057,8 @@ class GaleriaCartasInventario(QWidget):
         self.btn_siguiente.setEnabled(self.current_page < total_pages - 1)
 
     def _on_energy_pill_selected(self, type_val):
-        """Sincroniza el QComboBox de Tipo cuando se hace clic en una ficha visual de energía."""
-        combo = self.filtros.get("type")
-        if not combo:
-            return
-        combo.blockSignals(True)
-        if not type_val:
-            combo.setCurrentIndex(0)
-        else:
-            idx = combo.findData(type_val)
-            if idx < 0:
-                idx = combo.findText(type_val, Qt.MatchFlag.MatchFixedString)
-            if idx < 0 and type_val == "Lightning":
-                idx = combo.findData("Electric")
-                if idx < 0:
-                    idx = combo.findText("Electric", Qt.MatchFlag.MatchFixedString)
-            combo.setCurrentIndex(idx if idx >= 0 else 0)
-        combo.blockSignals(False)
+        """Aplica el filtro rápido por Tipo de Energía (Issue #65)."""
+        self._active_type = type_val or None
         self.reset_page_and_actualizar()
 
     def _on_generation_pill_selected(self, gen_val):
@@ -1108,20 +1145,30 @@ class GaleriaCartasInventario(QWidget):
             return
         card_key = item.data(Qt.ItemDataRole.UserRole)
         carta = self._current_cards_map.get(card_key)
-        if not carta:
+        win = self.window()
+        if not carta or not win:
             return
         c_lang = carta.idioma or language_manager.current_language
         pix = get_webp_pixmap(carta.id_api, carta.nombre, c_lang, size=(360, 500), allow_lang_fallback=True)
         if not pix or pix.isNull():
             pix = get_card_placeholder_pixmap((360, 500), carta.nombre)
-        overlay = CardZoomOverlay(carta, pix, self.window())
-        overlay.show()
-
-    def _sync_energy_bar_from_combo(self):
-        """Sincroniza la barra visual de energías cuando cambia el QComboBox de Tipo."""
-        combo = self.filtros.get("type")
-        if combo and hasattr(self, "energy_bar"):
-            self.energy_bar.set_active_type(self._get_filter_value(combo))
+        vp = self.list_table.viewport()
+        cell_rect = self.list_table.visualRect(self.list_table.model().index(row, max(0, _col)))
+        if cell_rect.isValid():
+            origin_rect = QRect(vp.mapToGlobal(cell_rect.topLeft()), cell_rect.size())
+        else:
+            center_pt = vp.mapToGlobal(vp.rect().center())
+            origin_rect = QRect(center_pt.x() - 60, center_pt.y() - 85, 120, 170)
+        overlay = CardZoomOverlay(win)
+        overlay.show_zoom(
+            pix,
+            origin_rect,
+            id_api=carta.id_api,
+            nombre_archivo=carta.nombre.lower().replace(" ", "_"),
+            set_id=getattr(carta, "set_id", None),
+            number=getattr(carta, "number", None),
+            idioma=c_lang,
+        )
 
     def _on_zoom_changed(self, size_key: str):
         """Aplica inmediatamente la escala seleccionada (Pequeño / Normal / Grande)."""
@@ -1173,18 +1220,19 @@ class GaleriaCartasInventario(QWidget):
 
         curr_lang = language_manager.current_language
         campos_labels = [
-            ("Tipo", "type"),
             ("Etapa", "stage"),
             ("Rule Box", "especial_type"),
             ("Entrenador", "trainer"),
             ("Rareza", "rarity"),
-            ("Edición", "edition"),
+            ("Tag", "tag"),
         ]
         for etiqueta, columna in campos_labels:
             if columna in self.filtros:
                 cb = self.filtros[columna]
                 selected_data = self._get_filter_value(cb)
                 cb.blockSignals(True)
+                if columna == "tag":
+                    cb.setToolTip(t("Tag (Etiqueta)"))
                 if cb.count() > 0:
                     cb.setItemText(0, f"{t(etiqueta)}: {t('Todos')}")
                 for i in range(1, cb.count()):

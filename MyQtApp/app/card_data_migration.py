@@ -1,4 +1,4 @@
-"""Migración y normalización transaccional de metadatos de cartas en SQLite (Tarea #72)."""
+"""Migración y normalización transaccional de metadatos de cartas en SQLite (Tareas #71, #72)."""
 
 from __future__ import annotations
 
@@ -7,9 +7,24 @@ import sqlite3
 import time
 from typing import Any
 
-CARD_DATA_MIGRATION_VERSION = 72
+CARD_DATA_MIGRATION_VERSION = 73
 
 VALID_STAGES = ("Basic", "Stage 1", "Stage 2", "Baby", "Restored", "Ninguno")
+
+VALID_TAGS = (
+    "Tera",
+    "Ancient",
+    "Future",
+    "Rapid Strike",
+    "Single Strike",
+    "Fusion Strike",
+    "Ultra Beast",
+    "Team Plasma",
+    "TAG TEAM",
+    "SP",
+    "Star",
+    "Prime",
+)
 
 STAGE_TRAINER_SUBTYPES = (
     "Supporter",
@@ -61,6 +76,9 @@ def _needs_migration(cur: sqlite3.Cursor, current_version: int) -> bool:
     """Verifica instantáneamente si la base de datos requiere normalización."""
     if current_version < CARD_DATA_MIGRATION_VERSION:
         return True
+    cols = {row[1] for row in cur.execute("PRAGMA table_info(Cartas)").fetchall()}
+    if "tag" not in cols:
+        return True
     return False
 
 
@@ -103,6 +121,21 @@ def normalize_cards_database(db_path: str, force: bool = False) -> dict[str, Any
             return result
 
         updates: dict[str, int] = {}
+
+        # 0. Asegurar columna `tag`, índice y valor por defecto 'Desconocido'
+        cols = {row[1] for row in cur.execute("PRAGMA table_info(Cartas)").fetchall()}
+        if "tag" not in cols:
+            cur.execute("ALTER TABLE Cartas ADD COLUMN tag VARCHAR DEFAULT 'Desconocido'")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_cartas_tag ON Cartas(tag)")
+
+        cur.execute(
+            """
+            UPDATE Cartas
+            SET tag = 'Desconocido'
+            WHERE tag IS NULL OR TRIM(tag) = '' OR tag IN ('Ninguno', 'Normal')
+            """
+        )
+        updates["tag_initialized"] = max(0, cur.rowcount)
 
         # 1. En `trainer`: mover valores que son Rule Box / Especial a `especial_type`
         #    (si `especial_type` está en 'Normal' / None / 'Ninguno') y normalizar 'Desconocido' / None -> 'Ninguno'.
@@ -206,6 +239,58 @@ def normalize_cards_database(db_path: str, force: bool = False) -> dict[str, Any
         )
         updates["stage_invalid_to_ninguno"] = max(0, cur.rowcount)
 
+        # 5b. Extraer Tags desde `especial_type` y `edition`, restaurando Rule Box real en `especial_type` (v73)
+        tag_placeholders = ",".join("?" for _ in VALID_TAGS)
+        cur.execute(
+            f"""
+            UPDATE Cartas
+            SET tag = CASE
+                    WHEN edition IN ({tag_placeholders}) AND edition != especial_type
+                    THEN especial_type || ', ' || edition
+                    ELSE especial_type
+                END,
+                especial_type = CASE
+                    WHEN nombre LIKE '% VMAX' OR nombre LIKE '% V-MAX' THEN 'VMAX'
+                    WHEN nombre LIKE '% VSTAR' THEN 'VSTAR'
+                    WHEN nombre LIKE '% V-UNION' THEN 'V-UNION'
+                    WHEN nombre LIKE '%-GX' OR nombre LIKE '% GX' THEN 'GX'
+                    WHEN SUBSTR(nombre, -3) IN ('-EX', ' EX') THEN 'EX'
+                    WHEN SUBSTR(nombre, -3) IN ('-ex', ' ex') THEN 'ex'
+                    WHEN SUBSTR(nombre, -2) = ' V' THEN 'V'
+                    ELSE 'Normal'
+                END
+            WHERE especial_type IN ({tag_placeholders})
+            """,
+            VALID_TAGS + VALID_TAGS,
+        )
+        updates["tags_from_especial_type"] = max(0, cur.rowcount)
+
+        cur.execute(
+            f"""
+            UPDATE Cartas
+            SET tag = CASE
+                    WHEN tag IS NULL OR TRIM(tag) = '' OR tag IN ('Desconocido', 'Ninguno', 'Normal')
+                    THEN edition
+                    WHEN instr(tag, edition) = 0
+                    THEN tag || ', ' || edition
+                    ELSE tag
+                END
+            WHERE edition IN ({tag_placeholders})
+            """,
+            VALID_TAGS,
+        )
+        updates["tags_from_edition"] = max(0, cur.rowcount)
+
+        cur.execute(
+            f"""
+            UPDATE Cartas
+            SET edition = 'Ninguno'
+            WHERE edition IN ({tag_placeholders})
+            """,
+            VALID_TAGS,
+        )
+        updates["edition_tags_cleared"] = max(0, cur.rowcount)
+
         # 6. Por sufijo del nombre (`nombre`): asegurar VMAX, VSTAR y V-UNION en `especial_type`.
         cur.execute(
             """
@@ -289,6 +374,12 @@ def normalize_cards_database(db_path: str, force: bool = False) -> dict[str, Any
                          AND en.edition IS NOT NULL AND en.edition NOT IN ('', 'Ninguno', 'Desconocido')
                     THEN en.edition
                     ELSE Cartas.edition
+                END,
+                tag = CASE
+                    WHEN (Cartas.tag IS NULL OR TRIM(Cartas.tag) = '' OR Cartas.tag IN ('Desconocido', 'Ninguno', 'Normal'))
+                         AND en.tag IS NOT NULL AND TRIM(en.tag) != '' AND en.tag NOT IN ('Desconocido', 'Ninguno', 'Normal')
+                    THEN en.tag
+                    ELSE Cartas.tag
                 END
             FROM Cartas AS en
             WHERE en.id_api = Cartas.id_api
@@ -307,6 +398,8 @@ def normalize_cards_database(db_path: str, force: bool = False) -> dict[str, Any
                       AND en.especial_type IS NOT NULL AND en.especial_type NOT IN ('', 'Normal', 'Ninguno', 'Desconocido'))
                   OR ((Cartas.edition IS NULL OR Cartas.edition IN ('', 'Ninguno', 'Desconocido'))
                       AND en.edition IS NOT NULL AND en.edition NOT IN ('', 'Ninguno', 'Desconocido'))
+                  OR ((Cartas.tag IS NULL OR TRIM(Cartas.tag) = '' OR Cartas.tag IN ('Desconocido', 'Ninguno', 'Normal'))
+                      AND en.tag IS NOT NULL AND TRIM(en.tag) != '' AND en.tag NOT IN ('Desconocido', 'Ninguno', 'Normal'))
               )
             """
         )

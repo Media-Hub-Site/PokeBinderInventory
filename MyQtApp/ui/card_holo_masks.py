@@ -8,8 +8,14 @@ import re
 import threading
 import unicodedata
 
-import cv2
-import numpy as np
+try:
+    import cv2
+    import numpy as np
+    _CV2_AVAILABLE = True
+except Exception:
+    cv2 = None  # type: ignore[assignment]
+    np = None  # type: ignore[assignment]
+    _CV2_AVAILABLE = False
 from PIL import Image
 from PyQt6.QtCore import QThread, Qt, pyqtSignal
 from PyQt6.QtGui import QImage, QPixmap
@@ -130,7 +136,7 @@ def qimage_to_bgr(
     size: tuple[int, int] = (CANONICAL_W, CANONICAL_H),
 ) -> np.ndarray | None:
     """Convierte un QImage de forma segura (respetando bytesPerLine) a BGR uint8."""
-    if qimg is None or qimg.isNull():
+    if not _CV2_AVAILABLE or qimg is None or qimg.isNull():
         return None
     img = qimg.convertToFormat(QImage.Format.Format_RGBA8888)
     if img.isNull() or img.width() <= 0 or img.height() <= 0:
@@ -148,6 +154,8 @@ def qimage_to_bgr(
 
 def mask_u8_to_alpha_qimage(mask_u8: np.ndarray) -> QImage:
     """Convierte una máscara uint8 (0=mate, 255=foil) directamente a QImage ARGB32 premultiplicada."""
+    if not _CV2_AVAILABLE or mask_u8 is None:
+        return QImage()
     h, w = mask_u8.shape[:2]
     clipped = np.clip(mask_u8, 0, 255).astype(np.uint8)
     premult = np.repeat(clipped[:, :, None], 4, axis=2)
@@ -156,7 +164,7 @@ def mask_u8_to_alpha_qimage(mask_u8: np.ndarray) -> QImage:
 
 def _grayscale_qimage_to_alpha_qimage(gray_qimg: QImage) -> QImage | None:
     """Convierte un QImage cargado desde disco en máscara alfa RGBA."""
-    if gray_qimg is None or gray_qimg.isNull():
+    if not _CV2_AVAILABLE or gray_qimg is None or gray_qimg.isNull():
         return None
     g = gray_qimg.convertToFormat(QImage.Format.Format_Grayscale8)
     if g.isNull() or g.width() <= 0 or g.height() <= 0:
@@ -741,7 +749,7 @@ def get_initial_foil_mask(
     is_hd: bool = False,
 ) -> tuple[QImage | None, bool, str]:
     """Obtiene máscara desde memoria/disco o genera al instante la máscara heurística Nivel-1 (<8 ms)."""
-    if not profile_key or profile_key == "matte_none" or pixmap is None or pixmap.isNull():
+    if not _CV2_AVAILABLE or not profile_key or profile_key == "matte_none" or pixmap is None or pixmap.isNull():
         return None, True, ""
 
     cache_key, disk_path = _build_cache_key(pixmap, id_api, idioma, profile_key, is_hd)
@@ -830,7 +838,7 @@ class HoloMaskWorker(QThread):
         self.is_hd = bool(is_hd)
 
     def run(self):
-        if self._card_qimage.isNull() or not self.profile_key or self.profile_key == "matte_none":
+        if not _CV2_AVAILABLE or self._card_qimage.isNull() or not self.profile_key or self.profile_key == "matte_none":
             return
         bgr = qimage_to_bgr(self._card_qimage, (CANONICAL_W, CANONICAL_H))
         if bgr is None:

@@ -3,7 +3,7 @@ import os
 import json
 import shutil
 
-APP_VERSION = "1.5.0"
+APP_VERSION = "2.4.1"
 
 # Rutas absolutas del proyecto
 if getattr(sys, 'frozen', False):

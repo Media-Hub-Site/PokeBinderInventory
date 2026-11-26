@@ -306,7 +306,13 @@ def ensure_db_schema_up_to_date():
             print(f"Error asegurando esquema DB: {e}")
 
 def main():
-    install_global_exception_hook()
+    smoke_test = "--smoke-test" in sys.argv[1:]
+    if smoke_test:
+        from MyQtApp.ui.card_holo_masks import _CV2_AVAILABLE
+        if not _CV2_AVAILABLE:
+            sys.exit(2)
+    else:
+        install_global_exception_hook()
 
     # Soporte para inyección de idioma desde Launcher (--lang=es/en) o variable de entorno
     lang_arg = os.environ.get("MEDIAHUB_APP_LANG", "")
@@ -341,16 +347,28 @@ def main():
     ensure_db_schema_up_to_date()
 
     # Generar respaldo de seguridad preventivo al iniciar
-    try:
-        from MyQtApp.app.backup import create_database_backup
-        create_database_backup(tag="auto")
-    except Exception as e:
-        print(f"Error generando respaldo automático de inicio: {e}")
+    if not smoke_test:
+        try:
+            from MyQtApp.app.backup import create_database_backup
+            create_database_backup(tag="auto")
+        except Exception as e:
+            print(f"Error generando respaldo automático de inicio: {e}")
 
     # Cargar Estilos Globales
     apply_global_style(app)
 
     window = AppWindow()
+    if smoke_test:
+        from PyQt6.QtGui import QPixmap, QColor
+        from MyQtApp.ui.card_holo_masks import get_initial_foil_mask
+        test_pix = QPixmap(180, 252)
+        test_pix.fill(QColor("#1e293b"))
+        mask_qimg, _, _ = get_initial_foil_mask(
+            test_pix, None, "es", "full_art_etched", rarity="Special Illustration Rare"
+        )
+        window.close()
+        app.quit()
+        sys.exit(0 if (mask_qimg is not None and not mask_qimg.isNull()) else 3)
     init_global_toast(window)
     window.show()
     QTimer.singleShot(0, window.center_on_screen)

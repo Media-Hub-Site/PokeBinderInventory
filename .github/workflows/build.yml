@@ -35,6 +35,22 @@ jobs:
       - name: Build Executable with PyInstaller Spec
         run: pyinstaller PokeBinder.spec
 
+      - name: Smoke Test Built Executable
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+          POKEBINDER_DATA_DIR: ${{ runner.temp }}\pb_smoke_data
+        run: |
+          $p = Start-Process -FilePath "dist\PokeBinder\PokeBinder.exe" -ArgumentList "--smoke-test" -PassThru
+          if (-not $p.WaitForExit(30000)) {
+            $p.Kill()
+            throw "PokeBinder.exe --smoke-test timed out (possible unhandled exception dialog)"
+          }
+          if ($p.ExitCode -ne 0) {
+            throw "PokeBinder.exe --smoke-test failed with exit code $($p.ExitCode)"
+          }
+          Write-Host "Smoke test passed cleanly!"
+
       - name: Compress Build to ZIP
         run: |
           Compress-Archive -Path "dist\PokeBinder\*" -DestinationPath "PokeBinder.zip" -Force

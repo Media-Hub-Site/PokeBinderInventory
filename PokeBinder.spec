@@ -20,6 +20,8 @@ if os.path.isdir('assets/fonts'):
 binaries = []
 hiddenimports = [
     'sqlalchemy.dialects.sqlite',
+    'cv2',
+    'numpy',
 ]
 
 tmp_ret = collect_all('PyQt6')

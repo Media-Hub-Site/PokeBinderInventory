@@ -12,6 +12,8 @@ urllib3>=2.2.0
 
 # Image Processing & WebP Optimization
 Pillow>=10.0.0
+numpy>=1.26.0
+opencv-python-headless>=4.10.0
 
 # Build & Compilation
 pyinstaller>=6.5.0
